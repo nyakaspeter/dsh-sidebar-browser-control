@@ -15,6 +15,7 @@ export class PageContext {
     this.mainFrame = null;
     this.ready = null;
     this.disposers = [];
+    this.inflight = new Set(); // main-frame-session requests still loading
   }
   init(signal) {
     this.ready ??= (async () => {
@@ -52,7 +53,21 @@ export class PageContext {
             if (key.startsWith(`${sessionId}|`)) this.worlds.delete(key);
         }),
       );
+      // Track requests from first attach so network idle also sees requests
+      // that started before a wait began.
+      const done = ({ requestId }, sessionId) => {
+        if (!sessionId) this.inflight.delete(requestId);
+      };
+      this.disposers.push(
+        cdp.on('Network.requestWillBeSent', (event, sessionId) => {
+          if (!sessionId && event.type !== 'EventSource')
+            this.inflight.add(event.requestId);
+        }),
+        cdp.on('Network.loadingFinished', done),
+        cdp.on('Network.loadingFailed', done),
+      );
       await cdp.call('Page.enable', {}, signal);
+      await cdp.call('Network.enable', {}, signal).catch(() => {});
       // Older or restricted targets may refuse auto-attach; cross-origin
       // out-of-process frames are then reported as inaccessible.
       await cdp

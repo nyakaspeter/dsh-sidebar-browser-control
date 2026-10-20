@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-browser-control",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Agent control of DeepSeek Harness sidebar browser through local CDP",
   "repository": {
     "type": "git",
@@ -46,8 +46,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-sidebar-browser",
-        "@deepseek-ai/dsh-client-ui-primitives",
-        "@deepseek-ai/dsh-api-workspace-controller"
+        "@deepseek-ai/dsh-client-ui-primitives"
       ],
       "platform": "web"
     },

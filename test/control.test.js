@@ -69,10 +69,7 @@ test('tool validates action and requires a live agent', async () => {
   });
   try {
     assert.equal(tool.name, 'sidebar_browser');
-    assert.match(tool.description, /reject optional cookies/);
-    assert.match(tool.description, /preserve existing choices/);
-    assert.match(tool.description, /max 6 consent interactions/);
-    assert.match(tool.description, /Never accept all/);
+    assert.doesNotMatch(tool.description, /cookie/i);
     await assert.rejects(
       tool.execute(
         { action: 'list' },
@@ -92,34 +89,14 @@ test('tool validates action and requires a live agent', async () => {
   }
 });
 
-test('cookie consent setting is live and defaults to enabled', async () => {
+test('status reports plugin updates only while the setting is on', async () => {
   const { SidebarController } = await import('../src/controller.js');
-  const original = SidebarController.prototype.run;
-  SidebarController.prototype.run = async () => ({});
+  const { UpdateChecker } = await import('../src/updates.js');
+  const run = SidebarController.prototype.run,
+    check = UpdateChecker.prototype.check;
+  SidebarController.prototype.run = async () => ({ ok: true });
+  UpdateChecker.prototype.check = async () => ({ available: false });
   try {
-    for (const [config, enabled] of [
-      [undefined, true],
-      [{ autoCookieConsent: true }, true],
-      [{ autoCookieConsent: false }, false],
-    ]) {
-      let tool;
-      const cleanup = [];
-      apply(
-        {
-          effect: (fn) => cleanup.push(fn()),
-          tools: { register: (t) => (tool = t) },
-        },
-        config,
-      );
-      try {
-        const result = JSON.parse(
-          await tool.execute({ action: 'status' }, { agent: { id: 'test' } }),
-        );
-        assert.equal(result.cookieConsent.enabled, enabled);
-      } finally {
-        cleanup.forEach((f) => f());
-      }
-    }
     let enabled = true,
       tool;
     const cleanup = [];
@@ -128,23 +105,22 @@ test('cookie consent setting is live and defaults to enabled', async () => {
         effect: (fn) => cleanup.push(fn()),
         tools: { register: (t) => (tool = t) },
       },
-      { autoCookieConsent: { get: () => enabled } },
+      { checkForUpdates: { get: () => enabled } },
     );
     try {
-      for (const value of [true, false, true]) {
-        enabled = value;
-        const result = JSON.parse(
-          await tool.execute(
-            { action: 'read', tabId: 'test' },
-            { agent: { id: 'test' } },
-          ),
+      const status = async () =>
+        JSON.parse(
+          await tool.execute({ action: 'status' }, { agent: { id: 'test' } }),
         );
-        assert.equal(result.cookieConsent.enabled, value);
-      }
+      assert.deepEqual((await status()).update, { available: false });
+      enabled = false;
+      assert.equal((await status()).update, undefined);
+      assert.equal((await status()).cookieConsent, undefined);
     } finally {
       cleanup.forEach((f) => f());
     }
   } finally {
-    SidebarController.prototype.run = original;
+    SidebarController.prototype.run = run;
+    UpdateChecker.prototype.check = check;
   }
 });

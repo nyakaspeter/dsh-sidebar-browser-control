@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.6.1',
+    const BUILD = '0.7.0',
       PROTOCOL = 2,
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';
@@ -73,16 +73,6 @@ window.__ModuleLoader__.load({
     // ---- Settings card ---------------------------------------------------
     const SETTINGS = [
       [
-        'autoCookieConsent',
-        'Automatically handle cookie consent',
-        'Reject optional cookies and preserve existing choices. When off, agents leave banners alone unless you ask. Applies to the next browser open/read/status call.',
-      ],
-      [
-        'shareBrowserStorage',
-        'Share sign-ins with DSH browser tabs',
-        "Background agent tabs use the same cookies and sign-ins as DSH's built-in browser tabs in the same workspace. Turn off to give each chat separate, empty storage. Applies to newly opened tabs.",
-      ],
-      [
         'checkForUpdates',
         'Check for plugin updates',
         'Check GitHub releases at most once a day and tell you when a new version is available.',
@@ -124,7 +114,7 @@ window.__ModuleLoader__.load({
             [props.scope],
           );
           if (props.view === 'summary')
-            return 'Background browser control, cookie, storage and update preferences.';
+            return 'Background browser control and update preferences.';
           const onChange = async (name, value) => {
             setSaving(true);
             setError('');
@@ -159,7 +149,7 @@ window.__ModuleLoader__.load({
           const ns = directory
             .getSnapshot()
             .view?.namespaces.find(
-              (n) => n.value && Object.hasOwn(n.value, 'autoCookieConsent'),
+              (n) => n.value && Object.hasOwn(n.value, 'checkForUpdates'),
             )?.ns;
           if (ns === namespace) return;
           unregister?.();
@@ -188,47 +178,8 @@ window.__ModuleLoader__.load({
       });
     }
 
-    // ---- Storage ---------------------------------------------------------
-    // Matches DSH's own browser: one partition per workspace (or chat without
-    // one), so sign-ins are shared with native tabs when the setting allows it.
-    function createStorage(ctx) {
-      let list = null;
-      ctx.inject?.(['workspaces'], (scope) => {
-        const current = scope.workspaces?.list ?? null;
-        list = current;
-        scope.effect(() => () => {
-          if (list === current) list = null;
-        });
-      });
-      const ready = (source, ms) =>
-        source.getSnapshot().phase === 'ready'
-          ? Promise.resolve(true)
-          : new Promise((resolve) => {
-              const timer = setTimeout(() => {
-                stop();
-                resolve(false);
-              }, ms);
-              const stop = source.subscribe(() => {
-                if (source.getSnapshot().phase !== 'ready') return;
-                clearTimeout(timer);
-                stop();
-                resolve(true);
-              });
-            });
-      return async (session, share) => {
-        if (!share) return `dsh-sidebar-control:${session}`;
-        const source = list;
-        if (!source || !(await ready(source, 3000)))
-          return `session:${session}`;
-        const workspace = source
-          .getSnapshot()
-          .items?.find((item) => item.sessionIds?.includes(session));
-        return workspace ? `cwd:${workspace.path}` : `session:${session}`;
-      };
-    }
-
     // ---- Page registry and agent API ---------------------------------------
-    function createPages({ sidebar, bridge, storageKey, requestLayout }) {
+    function createPages({ sidebar, bridge, requestLayout }) {
       const owned = new Map(),
         panels = new Map();
       let disposed = false,
@@ -356,9 +307,9 @@ window.__ModuleLoader__.load({
         const key = keyFor(session, tab.id);
         let reservation, container;
         try {
-          reservation = await bridge.acquire(
-            await storageKey(session, options.shareStorage !== false),
-          );
+          // One private storage partition per chat, separate from DSH's
+          // own browser tabs and from every other chat.
+          reservation = await bridge.acquire(`dsh-sidebar-control:${session}`);
           if (disposed) throw new Error('Plugin was unloaded');
           container = document.createElement('div');
           Object.assign(container.style, {
@@ -884,12 +835,10 @@ window.__ModuleLoader__.load({
           return;
         }
         installSettings(ctx);
-        const storageKey = createStorage(ctx);
         let layout;
         const pages = createPages({
           sidebar,
           bridge,
-          storageKey,
           requestLayout: (now) => layout.request(now),
         });
         layout = createLayout(sidebar, pages);

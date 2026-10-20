@@ -227,7 +227,6 @@ export class SidebarController {
         'open',
         website(args.url),
         args.background !== false,
-        { shareStorage: context.shareStorage !== false },
       );
       this.targetCache = null;
       return result;
@@ -531,26 +530,26 @@ export class SidebarController {
     }
     return combineRead(parts, args, inaccessible);
   }
+  // Idle: the document finished loading (covers requests from before the
+  // plugin attached) and no tracked request was in flight for 500 ms.
   async networkIdle(page, args, signal) {
     const timeoutMs = args.timeoutMs ?? 5000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000)
       throw Error('timeoutMs must be 1–10000.');
-    const inflight = new Set();
-    const done = (p) => inflight.delete(p.requestId);
-    const offs = [
-      page.on('Network.requestWillBeSent', (p, sessionId) => {
-        if (!sessionId && p.type !== 'EventSource') inflight.add(p.requestId);
-      }),
-      page.on('Network.loadingFinished', done),
-      page.on('Network.loadingFailed', done),
-    ];
+    const frames = page.context,
+      inflight = frames.inflight;
     const bound = AbortSignal.timeout(timeoutMs),
       combined = signal ? AbortSignal.any([signal, bound]) : bound;
     try {
-      if (!page.recording) await page.call('Network.enable', {}, combined);
       let idleSince = Date.now();
       while (true) {
-        if (inflight.size) idleSince = Date.now();
+        const loaded =
+          (await frames.evaluate(
+            undefined,
+            'document.readyState',
+            combined,
+          )) === 'complete';
+        if (!loaded || inflight.size) idleSince = Date.now();
         else if (Date.now() - idleSince >= 500) return { matched: true };
         await delay(50, undefined, { signal: combined });
       }
@@ -565,12 +564,6 @@ export class SidebarController {
             'The network did not go idle within the deadline (long-polling pages may never idle). Read the page before deciding what to do next.',
         };
       throw error;
-    } finally {
-      offs.forEach((off) => off());
-      if (!page.recording)
-        page
-          .call('Network.disable', {}, AbortSignal.timeout(1000))
-          .catch(() => {});
     }
   }
   async screenshot(page, main, args, session, signal, dom, invoke) {

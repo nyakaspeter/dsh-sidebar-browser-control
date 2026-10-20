@@ -90,8 +90,6 @@ const checks = [
     'onOpenRequested(',
     'setAttribute("name", reservation.lease)',
     '"about:blank#" + reservation.lease',
-    '`cwd:${workspace.path}`',
-    '`session:${sessionId}`',
     'protocolVersion === 1',
   ].map((s) => [`native browser: ${s}`, () => files.browser?.includes(s)]),
   ...[

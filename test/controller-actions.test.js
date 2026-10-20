@@ -191,31 +191,30 @@ test('element screenshots clip to the element in page coordinates', async () => 
   );
   c.dispose();
 });
-test('networkidle waits for in-flight main-frame requests to finish', async () => {
+test('networkidle waits for load and for requests already in flight', async () => {
   const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
-  const page = fakePage();
+  let state = 'interactive';
+  const page = fakePage({ dom: { 'document.readyState': () => state } });
+  page.context.inflight = new Set(['started-before-wait']);
+  const started = Date.now();
   const waiting = run(c, page, {
     action: 'wait',
     condition: 'networkidle',
     timeoutMs: 3000,
   });
-  await new Promise((r) => setTimeout(r, 20));
-  page.emit('Network.requestWillBeSent', { requestId: '1', type: 'XHR' });
-  await new Promise((r) => setTimeout(r, 300));
-  page.emit('Network.loadingFinished', { requestId: '1' });
-  const started = Date.now();
+  await new Promise((r) => setTimeout(r, 150));
+  state = 'complete';
+  await new Promise((r) => setTimeout(r, 150));
+  page.context.inflight.delete('started-before-wait');
   assert.deepEqual(await waiting, { matched: true });
-  assert.ok(Date.now() - started >= 450, 'waited for 500 ms of quiet');
-  assert.ok(page.calls.some((x) => x.method === 'Network.disable'));
-  const stuck = fakePage();
-  const pending = run(c, stuck, {
+  assert.ok(Date.now() - started >= 750, 'load, then 500 ms of quiet');
+  const stuck = fakePage({ dom: { 'document.readyState': 'complete' } });
+  stuck.context.inflight = new Set(['poll']);
+  const result = await run(c, stuck, {
     action: 'wait',
     condition: 'networkidle',
     timeoutMs: 200,
   });
-  await new Promise((r) => setTimeout(r, 10));
-  stuck.emit('Network.requestWillBeSent', { requestId: 'poll', type: 'Fetch' });
-  const result = await pending;
   assert.equal(result.code, 'WAIT_TIMEOUT');
   assert.equal(result.pendingRequests, 1);
   c.dispose();

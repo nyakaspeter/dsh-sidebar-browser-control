@@ -3,7 +3,7 @@
 ## Structure
 
 - `src/index.js`: tool registration, input schema, settings, update notices and output integration.
-- `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, settings card, workspace storage keys, page registry and agent API, layout, tab title/toolbar.
+- `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, settings card, page registry and agent API, layout, tab title/toolbar.
 - `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching and action dispatch (read, upload, download, screenshot, network idle).
 - `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets and frame-qualified refs.
 - `src/cdp.js`, `src/endpoint.js`: loopback transport with child sessions and event subscriptions; `DevToolsActivePort` discovery and verification.
@@ -11,7 +11,7 @@
 - `src/page-dom.js`, `src/interactions.js`, `src/read.js`: in-page DOM snapshots and actions, input dispatch, cross-frame read pagination.
 - `src/transfer.js`: download naming/saving, host fallback with private-address refusal, upload path confinement.
 - `src/screenshot.js`, `src/image-output.js`: bounded capture and DSH image attachments.
-- `src/autostart.js`, `src/desktop.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup.
+- `src/autostart.js`, `src/desktop.js`, `src/restart.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup; `restart.js` holds the testable restart flow.
 - `src/compatibility.js`, `src/help.js`, `src/updates.js`: build checks, sectioned agent guidance, GitHub release checks.
 
 Client code runs in DSH's module loader as a single file; there is no build step. Keep the client `BUILD` literal synchronized with `package.json`; the compatibility test checks this.
@@ -26,7 +26,7 @@ Route keyboard input and reload/back/forward through the guest webview methods. 
 
 Plugin DOM code runs in a CDP isolated world (`Page.createIsolatedWorld`), never in the page's main world; only the user-facing `evaluate` action uses the main world. Out-of-process frames only receive mouse input sent to their own session, in coordinates relative to that session's root frame. Chromium produces no frames for `opacity: 0` layers, so screenshots of parked pages briefly raise the container to `0.01` opacity.
 
-Plugin tabs acquire storage with the same workspace key DSH's browser uses (`cwd:<path>` or `session:<id>`), unless the user turned sharing off.
+Plugin tabs acquire storage with a per-chat key (`dsh-sidebar-control:<session>`), never DSH's workspace keys, so they never see the user's sign-ins.
 
 The integration uses some undocumented session-specific sidebar APIs and webview attributes. `engines.dsh` is an open range (`>=0.2.0-rc.2`), so DSH does not block the plugin on updates; DSH ignores the `@deepseek-ai/dsh-*` peers when `engines.dsh` is present. Never pin those peers to an exact version. The client reports missing APIs as `DSH_INCOMPATIBLE` instead of failing silently, so after a DSH release run `npm run doctor` and the live tests, then update the tested version in the README. Avoid dumping application logs: they can contain credentials.
 
@@ -51,16 +51,15 @@ npm run test:live
 
 This runs interaction, compact-read and feature checks. The feature check covers isolated worlds against a page that monkeypatches DOM APIs, in-process and out-of-process cross-origin frames, upload, download (including the private-address refusal), screenshot modes, network idle and the `cdp` policy. Additional checks:
 
-| Command                                                 | Coverage                                                       |
-| ------------------------------------------------------- | -------------------------------------------------------------- |
-| `node scripts/concurrency-test.mjs SESSION_A SESSION_B` | Repeated background operations and ownership isolation         |
-| `node scripts/queue-test.mjs SESSION_A SESSION_B`       | Another chat can read while one chat waits                     |
-| `node scripts/consent-fixture.mjs`                      | Local page for manual agent cookie/screenshot acceptance tests |
-| `node scripts/profile.mjs`                              | macOS app-wide CPU/RSS samples with three local pages          |
+| Command                                                 | Coverage                                               |
+| ------------------------------------------------------- | ------------------------------------------------------ |
+| `node scripts/concurrency-test.mjs SESSION_A SESSION_B` | Repeated background operations and ownership isolation |
+| `node scripts/queue-test.mjs SESSION_A SESSION_B`       | Another chat can read while one chat waits             |
+| `node scripts/profile.mjs`                              | macOS app-wide CPU/RSS samples with three local pages  |
 
-For two-chat checks, open each test chat once after starting DSH so both are loaded. Use their actual session IDs. Fixture scripts clean up their own tabs; the consent fixture runs until stopped. Profiling measures the entire app, not isolated plugin overhead.
+For two-chat checks, open each test chat once after starting DSH so both are loaded. Use their actual session IDs. Fixture scripts clean up their own tabs. Profiling measures the entire app, not isolated plugin overhead.
 
-Check manually that background opens leave the sidebar unchanged, reveal preserves form/page state, native tabs retain their toolbar, and minimized screenshot failures do not trigger retries. Verify the cookie switch and an actual agent turn after changes to tool guidance or attachment output.
+Check manually that background opens leave the sidebar unchanged, reveal preserves form/page state, native tabs retain their toolbar, and minimized screenshot failures do not trigger retries. Verify an actual agent turn after changes to tool guidance or attachment output.
 
 ## Packaging
 
@@ -72,4 +71,4 @@ After installing a new archive, fully quit/reopen DSH to reload host and client 
 
 Requires Node.js 22 or newer. Run `npm ci`, `npm test`, and `npm pack`, then install the generated `.tgz` through DSH’s Add plugin dialog. Fully quit/reopen after upgrading. Run `npm run doctor` to check the connection and host/client build match.
 
-Startup discovers the parent DSH process and bundled Node runtime. DSH is relaunched with `--remote-debugging-port=0`; the plugin reads the port from `DevToolsActivePort` in DSH's Electron user-data directory and verifies the browser socket path before use. macOS uses the detected app bundle; Windows uses the detected executable; Linux preserves the original AppImage path when available. There are no custom launcher or environment settings. The helper makes at most one normal-restart attempt per manual app launch, with an atomic claim to prevent duplicates and a launch marker to prevent loops. It never force-quits DSH. Linux waits for normal user Quit; Windows requests window close but may also need Quit when DSH remains in the tray. The helper expires after five minutes. Failure diagnostics live in the platform state directory: macOS Application Support, Windows LocalAppData, or Linux XDG state home, under `dsh-sidebar-browser-control`. Unit tests run on all three OSes in CI; only macOS desktop integration has been locally validated.
+Startup discovers the parent DSH process and bundled Node runtime. DSH is relaunched with `--remote-debugging-port=0`; the plugin reads the port from `DevToolsActivePort` in DSH's Electron user-data directory and verifies the browser socket path before use. macOS uses the detected app bundle; Windows uses the detected executable; Linux preserves the original AppImage path when available. There are no custom launcher or environment settings. The helper makes at most one normal-restart attempt per manual app launch, with an atomic claim to prevent duplicates and a launch marker to prevent loops. If DSH is already running again when the original process exits (the user reopened it), the helper does not launch another instance; that launch's own plugin handles its restart. Success is only recorded when a DSH process started with the restart flag is running and its endpoint still verifies after a settle period, because a second launch that hands off to an existing instance can publish a port briefly before exiting. It never force-quits DSH. Linux waits for normal user Quit; Windows requests window close but may also need Quit when DSH remains in the tray. The helper expires after five minutes. Failure diagnostics live in the platform state directory: macOS Application Support, Windows LocalAppData, or Linux XDG state home, under `dsh-sidebar-browser-control`. Unit tests run on all three OSes in CI; only macOS desktop integration has been locally validated.

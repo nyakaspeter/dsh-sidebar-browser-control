@@ -152,3 +152,22 @@ test('frame-qualified refs route to their frame and expire on the next read', ()
   ctx.resetRefs();
   assert.throws(() => ctx.route(`${key}:r1-2`), /Stale/);
 });
+test('in-flight main-frame requests are tracked from the first attach', async () => {
+  const cdp = fakeCdp({});
+  const ctx = new PageContext(cdp);
+  await ctx.init();
+  assert.ok(cdp.calls.some(([, m]) => m === 'Network.enable'));
+  cdp.emit('Network.requestWillBeSent', { requestId: 'a', type: 'XHR' });
+  cdp.emit('Network.requestWillBeSent', {
+    requestId: 'sse',
+    type: 'EventSource',
+  });
+  cdp.emit(
+    'Network.requestWillBeSent',
+    { requestId: 'oop', type: 'XHR' },
+    's1',
+  );
+  assert.deepEqual([...ctx.inflight], ['a']);
+  cdp.emit('Network.loadingFailed', { requestId: 'a' });
+  assert.equal(ctx.inflight.size, 0);
+});

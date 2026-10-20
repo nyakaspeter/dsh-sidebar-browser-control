@@ -261,3 +261,53 @@ export async function waitForExit(
     'DSH did not quit within five minutes; restart cancelled without forcing shutdown.',
   );
 }
+
+// A DSH main process: same executable (by name, since AppImage mount paths
+// change per launch), excluding Chromium helpers, the Node host and this helper.
+export function isDesktopCommand(command, binary, platform = process.platform) {
+  if (/(?:--type=|--expose-internals|auto-restart\.mjs)/.test(command))
+    return false;
+  const text = command.replace(/^"/, '');
+  if (platform === 'linux') {
+    const program = text.split(' ')[0];
+    return posix.basename(program) === posix.basename(binary);
+  }
+  const fold = (v) => (platform === 'win32' ? v.toLowerCase() : v);
+  return (
+    fold(text).startsWith(fold(binary)) &&
+    /^(?:"|\s|$)/.test(text.slice(binary.length))
+  );
+}
+
+export async function listDesktops(desktop, platform = process.platform) {
+  let rows;
+  if (platform === 'win32') {
+    const name = win32.basename(desktop.binary).replace(/'/g, "''");
+    const { stdout } = await powershell(
+      `@(Get-CimInstance Win32_Process -Filter "Name = '${name}'" | ForEach-Object { @{pid=[int]$_.ProcessId; started=$_.CreationDate.ToUniversalTime().ToString('o'); command=[string]$_.CommandLine} }) | ConvertTo-Json -Compress`,
+    );
+    rows = stdout.trim() ? [JSON.parse(stdout)].flat() : [];
+  } else {
+    const ps = platform === 'darwin' ? '/bin/ps' : 'ps';
+    const { stdout } = await exec(ps, ['-e', '-o', 'pid=,lstart=,command='], {
+      timeout: 5000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    rows = stdout
+      .split('\n')
+      .map((line) => /^\s*(\d+)\s+(.{24})\s+(.+)$/.exec(line))
+      .filter(Boolean)
+      .map(([, pid, started, command]) => ({
+        pid: Number(pid),
+        started,
+        command,
+      }));
+  }
+  return rows
+    .filter(
+      (r) =>
+        r.pid !== process.pid &&
+        isDesktopCommand(r.command ?? '', desktop.binary, platform),
+    )
+    .map((r) => processIdentity({ ...r, binary: desktop.binary }));
+}

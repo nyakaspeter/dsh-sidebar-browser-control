@@ -6,10 +6,7 @@ const source = readFileSync(
   new URL('../src/client.js', import.meta.url),
   'utf8',
 );
-function setup(
-  broken = false,
-  { workspaces, active, protocolVersion = 1 } = {},
-) {
+function setup(broken = false, { active, protocolVersion = 1 } = {}) {
   const nativeViews = new Map();
   const rows = new Map([
     ['A', []],
@@ -107,11 +104,6 @@ function setup(
             sidebarRightTabs: { register: () => () => {} },
             slots: { inject: () => () => {}, register: () => () => {} },
             effect: (fn) => cleanups.push(fn()),
-            ...(workspaces && {
-              inject: (names, callback) =>
-                names[0] === 'workspaces' &&
-                callback({ workspaces, effect: () => {} }),
-            }),
           }),
     },
   };
@@ -278,49 +270,6 @@ test('native pages retain DSH ownership on plugin disposal', async () => {
 
 // The client runs in a vm realm; compare its objects structurally.
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const workspaceList = (phase = 'ready') => {
-  const listeners = new Set();
-  let state = {
-    phase,
-    items: [{ path: '/work/project', sessionIds: ['A'] }],
-  };
-  return {
-    getSnapshot: () => state,
-    subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
-    ready() {
-      state = { ...state, phase: 'ready' };
-      listeners.forEach((fn) => fn());
-    },
-  };
-};
-test('plugin tabs share DSH workspace storage unless the setting turns it off', async () => {
-  const list = workspaceList();
-  const { api, acquired, dispose } = setup(false, { workspaces: { list } });
-  try {
-    await api.open('A', 'https://example.org');
-    await api.open('B', 'https://example.org');
-    await api.open('A', 'https://example.org', true, { shareStorage: false });
-    assert.deepEqual(acquired, [
-      'cwd:/work/project',
-      'session:B',
-      'dsh-sidebar-control:A',
-    ]);
-  } finally {
-    await dispose();
-  }
-});
-test('storage waits for workspaces to load before choosing a partition', async () => {
-  const list = workspaceList('loading');
-  const { api, acquired, dispose } = setup(false, { workspaces: { list } });
-  try {
-    const opening = api.open('A', 'https://example.org');
-    setTimeout(() => list.ready(), 20);
-    await opening;
-    assert.deepEqual(acquired, ['cwd:/work/project']);
-  } finally {
-    await dispose();
-  }
-});
 test('hasSession reports whether this window holds and shows a chat', async () => {
   const { api, dispose } = setup();
   try {
@@ -387,6 +336,21 @@ test('capture surface raises parked plugin tabs and reports hidden native tabs',
       () => api.captureSurface('B', 'missing', true),
       /Unknown tab/,
     );
+  } finally {
+    await dispose();
+  }
+});
+test('plugin tabs use storage private to the calling chat', async () => {
+  const { api, acquired, dispose } = setup();
+  try {
+    await api.open('A', 'https://example.org');
+    await api.open('A', 'https://example.org/2');
+    await api.open('B', 'https://example.org');
+    assert.deepEqual(acquired, [
+      'dsh-sidebar-control:A',
+      'dsh-sidebar-control:A',
+      'dsh-sidebar-control:B',
+    ]);
   } finally {
     await dispose();
   }
