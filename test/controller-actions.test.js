@@ -52,51 +52,6 @@ const run = (c, page, args, context = {}) =>
     context,
   );
 
-test('multi-window routing picks the window that shows the calling chat', async () => {
-  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
-  const windows = {
-    w1: { loaded: true, visible: false },
-    w2: { loaded: true, visible: true },
-    w3: null,
-  };
-  c.connection = async (t) => ({ evaluate: async () => windows[t.id] });
-  const apps = Object.keys(windows).map((id) => ({
-    id,
-    type: 'page',
-    url: 'dsh-app://app/',
-  }));
-  assert.equal((await c.windowFor(apps, 'chat')).id, 'w2');
-  windows.w2 = null;
-  c.windows.clear();
-  assert.equal((await c.windowFor(apps, 'chat')).id, 'w1');
-  windows.w1 = null;
-  c.windows.clear();
-  await assert.rejects(
-    c.windowFor(apps, 'chat'),
-    /not loaded in any DSH window/,
-  );
-  c.dispose();
-});
-test('raw cdp commands pass the policy before reaching the page', async () => {
-  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
-  const page = fakePage();
-  await assert.rejects(
-    run(c, page, {
-      action: 'cdp',
-      method: 'Page.navigate',
-      params: '{"url":"file:///etc/passwd"}',
-    }),
-    /navigate action/,
-  );
-  assert.equal(page.calls.length, 0);
-  await run(c, page, {
-    action: 'cdp',
-    method: 'DOM.getDocument',
-    params: '{}',
-  });
-  assert.equal(page.calls[0].method, 'DOM.getDocument');
-  c.dispose();
-});
 test('upload resolves files and targets the frame session of the input', async () => {
   const state = await dir(),
     cwd = join(state, 'cwd');
@@ -153,14 +108,11 @@ test('element screenshots clip to the element in page coordinates', async () => 
     action: 'screenshot',
     tabId: 't',
     ref: 'r1',
-    format: 'jpeg',
-    quality: 50,
   });
-  assert.equal(shot.mediaType, 'image/jpeg');
+  assert.equal(shot.mediaType, 'image/png');
   const capture = page.calls.find((x) => x.method === 'Page.captureScreenshot');
   assert.deepEqual(capture.params, {
-    format: 'jpeg',
-    quality: 50,
+    format: 'png',
     clip: { x: 15, y: 520, width: 30, height: 40, scale: 1 },
   });
   const full = await run(c, page, {
@@ -243,14 +195,13 @@ test('downloads stream from the page in chunks into the chat downloads folder', 
     tabId: 't',
     ref: 'r1',
   });
-  assert.equal(result.via, 'page');
   assert.equal(result.bytes, 5);
   assert.match(result.path, /report\.pdf$/);
   assert.ok(result.path.startsWith(join(state, 'downloads')));
   assert.equal(await readFile(result.path, 'utf8'), '%PDF!');
   c.dispose();
 });
-test('a CORS-blocked download falls back to the host and refuses local addresses', async () => {
+test('a download the page cannot fetch fails with guidance instead of fetching host-side', async () => {
   const c = new SidebarController({
     endpoint: 'http://127.0.0.1:1',
     stateDir: await dir(),
@@ -267,7 +218,7 @@ test('a CORS-blocked download falls back to the host and refuses local addresses
       tabId: 't',
       url: 'http://127.0.0.1:9/x',
     }),
-    /private or local/,
+    /cannot be downloaded/,
   );
   await assert.rejects(
     run(c, page, { action: 'download', tabId: 't', url: 'file:///etc/passwd' }),
@@ -349,4 +300,89 @@ test('multi-chunk page downloads are appended to disk in order', async () => {
   assert.equal(await readFile(result.path, 'utf8'), 'AB');
   assert.equal(result.bytes, 2);
   c.dispose();
+});
+test('drag completes native HTML5 drags and plain mouse drags', async () => {
+  for (const html5 of [true, false]) {
+    const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+    const page = fakePage({ dom: { '"point"': { x: 10, y: 20 } } });
+    const call = page.call.bind(page);
+    let pressed = false;
+    page.call = async (method, params, s, sid) => {
+      if (
+        method === 'Input.dispatchMouseEvent' &&
+        params.type === 'mousePressed'
+      )
+        pressed = true;
+      if (
+        html5 &&
+        pressed &&
+        method === 'Input.dispatchMouseEvent' &&
+        params.type === 'mouseMoved'
+      )
+        page.emit('Input.dragIntercepted', { data: { items: [] } });
+      return call(method, params, s, sid);
+    };
+    const result = await run(c, page, {
+      action: 'drag',
+      tabId: 't',
+      ref: 'r1.1',
+      toX: 300,
+      toY: 200,
+    });
+    const methods = page.calls.map((x) => `${x.method}:${x.params.type ?? ''}`);
+    assert.equal(result.html5, html5 || undefined);
+    assert.equal(
+      methods.filter((m) => m.startsWith('Input.dispatchDragEvent')).length,
+      html5 ? 3 : 0,
+    );
+    const drop = page.calls.find((x) => x.params.type === 'drop');
+    if (html5) assert.deepEqual([drop.params.x, drop.params.y], [300, 200]);
+    assert.ok(methods.includes('Input.dispatchMouseEvent:mouseReleased'));
+    assert.equal(page.calls.at(-1).params.enabled, false, 'interception off');
+    c.dispose();
+  }
+});
+test('plugin tabs load only after logging is attached', async () => {
+  for (const attachFails of [false, true]) {
+    const order = [];
+    const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+    c.targets = async () => [
+      { id: 'app', type: 'page', url: 'dsh-app://app/' },
+    ];
+    const { BUILD } = await import('../src/compatibility.js');
+    c.connection = async () => ({
+      async evaluate(expression) {
+        if (expression.includes('status?.()'))
+          return { version: 2, build: BUILD };
+        const [, method, args] = /api\["(\w+)"\]\(\.\.\.(\[.*\])\)/.exec(
+          expression,
+        );
+        order.push([method, ...JSON.parse(args).slice(1)]);
+        if (method === 'open')
+          return { tabId: 't1', background: true, pendingLoad: true };
+        if (method === 'lease') return 'lease-1';
+        return {};
+      },
+    });
+    c.locate = async () => {
+      order.push(['attach']);
+      if (attachFails) throw new Error('target not found');
+      return {
+        on: () => () => {},
+        call: async () => ({ frameTree: { frame: { id: 'm' } } }),
+      };
+    };
+    const result = await c.run(
+      { action: 'open', url: 'https://x.test/' },
+      'chat',
+    );
+    assert.deepEqual(result, { tabId: 't1', background: true });
+    assert.deepEqual(order, [
+      ['open', 'https://x.test/', true, { deferLoad: true }],
+      ['lease', 't1'],
+      ['attach'],
+      ['load', 't1'],
+    ]);
+    c.dispose();
+  }
 });

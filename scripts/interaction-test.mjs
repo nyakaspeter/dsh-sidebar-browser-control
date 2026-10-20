@@ -25,50 +25,47 @@ try {
     effect: (fn) => cleanups.push(fn()),
     tools: { register: (t) => (tool = t) },
   });
-  const run = async (args) =>
-    JSON.parse(
-      await tool.execute(
-        { ...(tab ? { tabId: tab.tabId } : {}), ...args },
-        { agent: { id: session }, signal: new AbortController().signal },
-      ),
+  // Reads, finds and logs are plain text; other results are JSON.
+  const run = async (args) => {
+    const out = await tool.execute(
+      { ...(tab ? { tabId: tab.tabId } : {}), ...args },
+      { agent: { id: session }, signal: new AbortController().signal },
     );
+    try {
+      return JSON.parse(out);
+    } catch {
+      return out;
+    }
+  };
+  const refOf = (text, label) =>
+    new RegExp(`^(\\S+) \\S+ ${JSON.stringify(label)}`, 'm').exec(text)?.[1];
   tab = await run({ action: 'open', url: base });
-  await run({ action: 'wait', condition: 'text', text: 'Loaded later' });
+  await run({ action: 'wait', mode: 'text', text: 'Loaded later' });
   const snap = await run({ action: 'read' }),
-    ref = snap.elements.find((e) => e.label === 'Name').ref;
-  assert.ok(snap.elements.some((e) => e.label === 'Shadow button'));
-  assert.ok(snap.elements.some((e) => e.label === 'Frame button'));
-  await run({ action: 'type', ref, text: 'Alice' });
+    ref = refOf(snap, 'Name');
+  assert.ok(ref, snap);
+  assert.ok(refOf(snap, 'Shadow button'));
+  assert.ok(refOf(snap, 'Frame button'));
+  const found = await run({ action: 'find', text: 'click me' });
+  assert.match(found, /^Found 1 for "click me":\n\S+ button "Click me"/);
+  await run({ action: 'type', target: ref, text: 'Alice' });
   await run({
     action: 'type',
-    selector: '#choice',
+    target: '#choice',
     mode: 'select',
     text: 'Beta',
   });
-  await run({
-    action: 'type',
-    selector: '#check',
-    mode: 'check',
-    checked: true,
-  });
-  await run({
-    action: 'press',
-    selector: '#name',
-    key: 'ArrowRight',
-    durationMs: 20,
-  });
-  await run({ action: 'press', selector: '#name', key: 'End' });
-  await run({ action: 'press', selector: '#name', key: 'x' });
-  await run({ action: 'click', selector: '#button', clickCount: 2 });
-  await run({ action: 'hover', selector: '#button' });
-  await run({ action: 'drag', selector: '#drag', toSelector: '#drop' });
-  assert.ok(
-    (await run({ action: 'scroll', selector: '#box', deltaY: 200 })).y > 0,
-  );
+  await run({ action: 'type', target: '#check', mode: 'check' });
+  await run({ action: 'press', target: '#name', text: 'ArrowRight' });
+  await run({ action: 'press', target: '#name', text: 'End' });
+  await run({ action: 'press', target: '#name', text: 'x' });
+  await run({ action: 'click', target: '#button', mode: 'double' });
+  await run({ action: 'hover', target: '#button' });
+  await run({ action: 'drag', target: '#drag', text: '#drop' });
+  assert.ok((await run({ action: 'scroll', target: '#box' })).y > 0);
   const state = await run({
     action: 'evaluate',
-    expression:
-      '({name:document.querySelector("#name").value,checked:document.querySelector("#check").checked,choice:document.querySelector("#choice").value,count:window.count,keys:window.keys,moves:window.moves})',
+    text: '({name:document.querySelector("#name").value,checked:document.querySelector("#check").checked,choice:document.querySelector("#choice").value,count:window.count,keys:window.keys,moves:window.moves})',
   });
   console.log('Input verification:', JSON.stringify(state));
   assert.equal(state.name, 'Alicex');
@@ -79,24 +76,21 @@ try {
   assert.ok(state.keys.includes('ArrowRight'));
   assert.equal(state.moves, 1);
   await run({ action: 'read' });
-  await assert.rejects(run({ action: 'click', ref }), /Stale/);
+  await assert.rejects(run({ action: 'click', target: ref }), /Stale/);
   await run({ action: 'focus' });
   await run({ action: 'hide' });
-  assert.equal(
-    await run({ action: 'evaluate', expression: 'window.count' }),
-    2,
-  );
+  assert.equal(await run({ action: 'evaluate', text: 'window.count' }), 2);
   await run({ action: 'navigate', url: base + '/next' });
-  await run({ action: 'wait', condition: 'url', text: '/next' });
+  await run({ action: 'wait', mode: 'url', text: '/next' });
   await run({ action: 'navigate', mode: 'back' });
-  await run({ action: 'wait', condition: 'ready' });
+  await run({ action: 'wait', mode: 'ready' });
   await run({ action: 'navigate', mode: 'forward' });
   await run({ action: 'navigate', mode: 'reload' });
   assert.equal(
     (
       await run({
         action: 'wait',
-        condition: 'text',
+        mode: 'text',
         text: 'never present',
         timeoutMs: 50,
       })
@@ -107,14 +101,14 @@ try {
   for (const kind of ['alert', 'confirm', 'prompt']) {
     await run({
       action: 'evaluate',
-      expression: `setTimeout(()=>{try{window.dialogResult=${kind}('Fixture ${kind}')}catch(e){window.dialogError=e.message}},10);true`,
+      text: `setTimeout(()=>{try{window.dialogResult=${kind}('Fixture ${kind}')}catch(e){window.dialogError=e.message}},10);true`,
     });
     await new Promise((r) => setTimeout(r, 100));
     const pending = await run({ action: 'dialog', mode: 'inspect' });
     if (kind === 'prompt' && pending.lastDialog?.type !== 'prompt') {
       const error = await run({
         action: 'evaluate',
-        expression: 'window.dialogError',
+        text: 'window.dialogError',
       });
       assert.match(error, /not supported/i);
       console.log('DSH does not support native prompt dialogs.');
@@ -137,7 +131,7 @@ try {
     });
     const value = await run({
       action: 'evaluate',
-      expression: 'window.dialogResult??null',
+      text: 'window.dialogResult??null',
     });
     if (kind === 'confirm') assert.equal(value, false);
     if (kind === 'prompt') assert.equal(value, 'answer');

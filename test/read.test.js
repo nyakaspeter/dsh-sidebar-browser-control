@@ -16,15 +16,17 @@ test('compact reads paginate text and elements with next offsets', () => {
   const result = combineRead([part('x'.repeat(7000), 50)], {});
   assert.equal(result.text.length, 6000);
   assert.equal(result.elements.length, 40);
-  assert.deepEqual(result.next, { textOffset: 6000, elementOffset: 40 });
-  const rest = combineRead([part('x'.repeat(7000), 50)], result.next);
+  assert.equal(result.next, '6000,40');
+  const rest = combineRead([part('x'.repeat(7000), 50)], {
+    textOffset: 6000,
+    elementOffset: 40,
+  });
   assert.equal(rest.text.length, 1000);
   assert.equal(rest.elements.length, 10);
-  assert.equal(rest.truncated, false);
   assert.equal(rest.next, undefined);
   assert.equal(
-    combineRead([part('x'.repeat(7000), 50)], { detail: 'full' }).truncated,
-    false,
+    combineRead([part('x'.repeat(7000), 50)], { detail: 'full' }).next,
+    undefined,
   );
 });
 test('cross-origin frames append labelled text and prefixed refs', () => {
@@ -45,7 +47,7 @@ test('cross-origin frames append labelled text and prefixed refs', () => {
 test('text truncated by the in-page cap still reports more text', () => {
   const capped = { ...part('x'.repeat(100), 0), textLength: 500000 };
   const result = combineRead([capped], { textOffset: 0 });
-  assert.equal(result.truncated, true);
+  assert.equal(result.next, '6000,0');
 });
 test('read offsets are validated', () => {
   assert.throws(() => readLimits({ textOffset: -1 }), /nonnegative/);

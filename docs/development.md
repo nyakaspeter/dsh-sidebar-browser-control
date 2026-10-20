@@ -2,19 +2,25 @@
 
 ## Structure
 
+- `src/args.js`: the 12-parameter public schema and its mapping onto internal arguments.
+- `src/format.js`: plain-text rendering of read, find and logs results.
+- `src/logs.js`: bounded per-tab console and request recording.
 - `src/index.js`: tool registration, input schema, settings, update notices and output integration.
 - `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, update badge, page registry and agent API, layout, tab title/toolbar.
 - `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching and action dispatch (read, upload, download, screenshot, network idle).
 - `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets and frame-qualified refs.
 - `src/cdp.js`, `src/endpoint.js`: loopback transport with child sessions and event subscriptions; `DevToolsActivePort` discovery and verification.
-- `src/policy.js`: what the raw `cdp` action may send.
 - `src/page-dom.js`, `src/interactions.js`, `src/read.js`: in-page DOM snapshots and actions, input dispatch, cross-frame read pagination.
-- `src/transfer.js`: download naming/saving, host fallback with private-address refusal, upload path confinement.
+- `src/transfer.js`: download naming and streaming to disk, upload path confinement.
 - `src/screenshot.js`, `src/image-output.js`: bounded capture and DSH image attachments.
 - `src/autostart.js`, `src/desktop.js`, `src/restart.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup; `restart.js` holds the testable restart flow.
 - `src/compatibility.js`, `src/help.js`: build checks and sectioned agent guidance.
 
 Client code runs in DSH's module loader as a single file; there is no build step. Keep the client `BUILD` literal synchronized with `package.json`; the compatibility test checks this.
+
+## Context budget
+
+The tool definition is sent with every model request, so it is kept to about 480 tokens: 12 parameters, with per-action variants in `mode` and string inputs in `text` (see `src/args.js`). Details live in `help`. Large results (read, find, logs) are plain text rather than JSON. A test fails if the definition or help grows past its budget; raise those limits only deliberately.
 
 ## Integration constraints
 
@@ -51,15 +57,9 @@ Enable the plugin, run `npm run doctor`, and select a disposable test chat. Thes
 npm run test:live
 ```
 
-This runs interaction, compact-read and feature checks. The feature check covers isolated worlds against a page that monkeypatches DOM APIs, in-process and out-of-process cross-origin frames, upload, download (including the private-address refusal), screenshot modes, network idle and the `cdp` policy. Additional checks:
+This runs interaction, compact-read and feature checks. The feature check goes through the tool interface and covers isolated worlds against a page that monkeypatches DOM APIs, main-content reads, find, in-process and out-of-process cross-origin frames, logs from the first load, HTML5 drag-and-drop, upload, download, screenshot modes and network idle.
 
-| Command                                                 | Coverage                                               |
-| ------------------------------------------------------- | ------------------------------------------------------ |
-| `node scripts/concurrency-test.mjs SESSION_A SESSION_B` | Repeated background operations and ownership isolation |
-| `node scripts/queue-test.mjs SESSION_A SESSION_B`       | Another chat can read while one chat waits             |
-| `node scripts/profile.mjs`                              | macOS app-wide CPU/RSS samples with three local pages  |
-
-For two-chat checks, open each test chat once after starting DSH so both are loaded. Use their actual session IDs. Fixture scripts clean up their own tabs. Profiling measures the entire app, not isolated plugin overhead.
+Fixture scripts clean up their own tabs.
 
 Check manually that background opens leave the sidebar unchanged, reveal preserves form/page state, native tabs retain their toolbar, and minimized screenshot failures do not trigger retries. Verify an actual agent turn after changes to tool guidance or attachment output.
 

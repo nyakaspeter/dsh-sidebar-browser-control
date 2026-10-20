@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.8.1',
+    const BUILD = '0.9.0',
       PROTOCOL = 2,
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';
@@ -343,15 +343,19 @@ window.__ModuleLoader__.load({
                   session,
                   request.url ?? request,
                   !page.sidebarTabId,
-                  options,
+                  // Nothing waits to attach to a popup; it loads immediately.
+                  { ...options, deferLoad: false },
                 )
                 .catch(console.error);
             },
           );
-          void view.loadURL(url).catch((error) => {
-            page.loadError = error.message;
-          });
           requestLayout(true);
+          // The host attaches logging before the first load, then calls load.
+          if (options.deferLoad) {
+            page.pendingURL = url;
+            return { tabId: tab.id, background, pendingLoad: true };
+          }
+          startLoad(page, url);
           return { tabId: tab.id, background };
         } catch (error) {
           if (owned.has(key)) await release(key);
@@ -363,6 +367,12 @@ window.__ModuleLoader__.load({
           throw error;
         }
       }
+      const startLoad = (page, url) => {
+        delete page.pendingURL;
+        void page.view.loadURL(url).catch((error) => {
+          page.loadError = error.message;
+        });
+      };
       const visibleNative = (session, id) =>
         sidebar.mounted.getSnapshot() === session &&
         sidebar.active()?.id === id &&
@@ -377,12 +387,6 @@ window.__ModuleLoader__.load({
             visibleSession: sidebar.mounted.getSnapshot() ?? null,
             tabs: owned.size,
             diagnostics: diagnostics(sidebar, nativeView),
-          };
-        },
-        hasSession(session) {
-          return {
-            loaded: !!sidebar.actionsFor(session),
-            visible: sidebar.mounted.getSnapshot() === session,
           };
         },
         async open(session, value, background = true, options = {}) {
@@ -502,6 +506,11 @@ window.__ModuleLoader__.load({
         },
         lease(session, id) {
           return get(session, id).lease;
+        },
+        load(session, id) {
+          const page = get(session, id);
+          if (page.pendingURL) startLoad(page, page.pendingURL);
+          return { tabId: id };
         },
         // Chromium produces no frames for opacity:0 layers, so captures of a
         // parked page stall: raise it imperceptibly for the capture only.
@@ -800,10 +809,6 @@ window.__ModuleLoader__.load({
                 version: PROTOCOL,
                 build: BUILD,
                 compatibilityError: missing.join(', '),
-              }),
-              hasSession: (session) => ({
-                loaded: !!sidebar?.actionsFor?.(session),
-                visible: sidebar?.mounted?.getSnapshot?.() === session,
               }),
             };
             window.__dshSidebarControl = api;

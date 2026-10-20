@@ -4,12 +4,9 @@ import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  assertPublicUrl,
   createDownload,
   downloadsDirectory,
   fileName,
-  hostFetch,
-  isPrivateAddress,
   resolveUploads,
   sanitizeName,
   saveDownload,
@@ -45,105 +42,6 @@ test('downloads never overwrite existing files and stay per chat', async () => {
   assert.notEqual(first, second);
   assert.match(second, /a \(1\)\.txt$/);
   assert.equal(await readFile(first, 'utf8'), '1');
-});
-test('private, loopback and link-local addresses are refused for host downloads', async () => {
-  for (const address of [
-    '127.0.0.1',
-    '10.1.2.3',
-    '172.20.0.1',
-    '192.168.1.1',
-    '169.254.169.254',
-    '100.64.0.1',
-    '0.0.0.0',
-    '::1',
-    'fd00::1',
-    'fe80::1',
-    '::ffff:127.0.0.1',
-  ])
-    assert.equal(isPrivateAddress(address), true, address);
-  for (const address of ['93.184.216.34', '2606:4700::1111', '172.32.0.1'])
-    assert.equal(isPrivateAddress(address), false, address);
-  await assert.rejects(assertPublicUrl('http://127.0.0.1:8080/'), /private/);
-  await assert.rejects(
-    assertPublicUrl('https://intranet.example/', async () => [
-      { address: '10.0.0.5' },
-    ]),
-    /private/,
-  );
-  await assert.rejects(assertPublicUrl('file:///etc/passwd'), /HTTP/);
-  assert.equal(
-    await assertPublicUrl('https://cdn.example/x', async () => [
-      { address: '93.184.216.34' },
-    ]),
-    'https://cdn.example/x',
-  );
-});
-test('host downloads stream to disk, look up cookies per hop and enforce the cap', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-host-'));
-  const resolver = async () => [{ address: '93.184.216.34' }];
-  const seen = [];
-  const request = async (url, init) => {
-    seen.push([url, init.headers.cookie]);
-    if (url === 'https://a.example/file')
-      return new Response(null, {
-        status: 302,
-        headers: { location: 'https://b.example/real' },
-      });
-    return new Response('payload', {
-      headers: {
-        'content-type': 'text/plain',
-        'content-disposition': 'attachment; filename="x.txt"',
-      },
-    });
-  };
-  const result = await hostFetch('https://a.example/file', {
-    resolver,
-    request,
-    open: (info) => createDownload(dir, fileName(info)),
-    cookiesFor: async (url) => (url.includes('a.example') ? 'sid=a' : ''),
-  });
-  assert.deepEqual(seen, [
-    ['https://a.example/file', 'sid=a'],
-    ['https://b.example/real', undefined],
-  ]);
-  assert.equal(result.bytes, 7);
-  assert.equal(result.url, 'https://b.example/real');
-  assert.match(result.path, /x\.txt$/);
-  assert.equal(await readFile(result.path, 'utf8'), 'payload');
-  // Undeclared length: the cap is enforced while streaming and the partial
-  // file is removed.
-  let partial;
-  await assert.rejects(
-    hostFetch('https://a.example/big', {
-      resolver,
-      cookiesFor: async () => '',
-      request: async () =>
-        new Response(
-          new ReadableStream({
-            start(c) {
-              c.enqueue(new TextEncoder().encode('too large'));
-              c.close();
-            },
-          }),
-        ),
-      open: async () => (partial = await createDownload(dir, 'big.bin', 3)),
-    }),
-    /exceeds/,
-  );
-  await assert.rejects(readFile(partial.path), /ENOENT/);
-  await assert.rejects(
-    hostFetch('https://a.example/x', {
-      resolver,
-      cookiesFor: async () => '',
-      open: () => assert.fail('never opened'),
-      request: async () =>
-        new Response(null, {
-          status: 302,
-          headers: { location: 'http://127.0.0.1/admin' },
-        }),
-    }),
-    /private/,
-  );
 });
 test('uploads are confined to the working directory and downloads folder', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-up-'));

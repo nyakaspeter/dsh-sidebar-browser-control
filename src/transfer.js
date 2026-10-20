@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
 import { mkdir, open, realpath, rm, stat } from 'node:fs/promises';
-import { isIP } from 'node:net';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
-import { website } from './cdp.js';
 import { stateDirectory } from './desktop.js';
 
 // Data is streamed to disk, so the cap bounds disk use and time, not memory.
@@ -104,107 +101,8 @@ export async function saveDownload(directory, name, data) {
   return file.path;
 }
 
-export function isPrivateAddress(address) {
-  if (isIP(address) === 6) {
-    const a = address.toLowerCase();
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
-    if (mapped) return isPrivateAddress(mapped[1]);
-    return (
-      a === '::' ||
-      a === '::1' ||
-      /^f[cd]/.test(a) ||
-      /^fe[89ab]/.test(a) ||
-      a.startsWith('ff')
-    );
-  }
-  const [a, b] = address.split('.').map(Number);
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    a >= 224 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19))
-  );
-}
-
-// The host-side fallback must not become a way to read local or intranet
-// services that the page itself could not read because of CORS.
-export async function assertPublicUrl(value, resolver = lookup) {
-  const url = new URL(website(value));
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  const addresses = isIP(host)
-    ? [host]
-    : (await resolver(host, { all: true })).map((r) => r.address);
-  if (!addresses.length || addresses.some(isPrivateAddress))
-    throw new Error(
-      'Host-side download refused for a private or local network address.',
-    );
-  return url.href;
-}
-
 const tooLarge = (n) =>
   `Download exceeds the ${MAX_DOWNLOAD_BYTES / 1048576} MB limit (${n} bytes).`;
-
-// Cookies are looked up per hop so a redirect never receives another site's
-// cookies. The body streams into the file returned by open(info).
-export async function hostFetch(
-  url,
-  {
-    cookiesFor,
-    userAgent,
-    referer,
-    signal,
-    request = fetch,
-    resolver,
-    limit = MAX_DOWNLOAD_BYTES,
-    open: openFile,
-  },
-) {
-  let current = url;
-  for (let hop = 0; hop < 6; hop++) {
-    current = await assertPublicUrl(current, resolver);
-    const cookie = await cookiesFor(current);
-    const response = await request(current, {
-      redirect: 'manual',
-      signal,
-      headers: {
-        ...(cookie && { cookie }),
-        ...(userAgent && { 'user-agent': userAgent }),
-        ...(referer && { referer }),
-      },
-    });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get('location');
-      if (!location) throw new Error('Redirect without a location.');
-      current = new URL(location, current).href;
-      continue;
-    }
-    if (!response.ok)
-      throw new Error(`Download failed: HTTP ${response.status}`);
-    const declared = Number(response.headers.get('content-length'));
-    if (declared > limit) throw new Error(tooLarge(declared));
-    const info = {
-      mediaType: response.headers.get('content-type') ?? undefined,
-      disposition: response.headers.get('content-disposition') ?? undefined,
-      url: current,
-    };
-    // The file name can depend on response headers, so the sink opens late.
-    const file = await openFile(info);
-    try {
-      for await (const chunk of response.body ?? []) await file.write(chunk);
-      await file.finish();
-    } catch (error) {
-      await file.abort();
-      throw error;
-    }
-    return { ...info, path: file.path, bytes: file.bytes };
-  }
-  throw new Error('Too many redirects.');
-}
 
 export async function resolveUploads(files, { cwd, roots }) {
   if (

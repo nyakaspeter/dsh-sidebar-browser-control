@@ -125,55 +125,31 @@ export async function interact(page, args, signal) {
     }
     return { pressed: args.key };
   }
-  const start = await point(args);
+  const at = await point(args);
   if (args.action === 'hover') {
-    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start });
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
     return { hovered: true };
   }
   const button = args.button ?? 'left',
     count = args.clickCount ?? 1;
   if (!['left', 'right', 'middle'].includes(button) || ![1, 2].includes(count))
     throw Error('button must be left/right/middle and clickCount 1 or 2.');
-  const end =
-    args.action === 'drag'
-      ? await point({
-          ref: args.toRef,
-          selector: args.toSelector,
-          x: args.toX,
-          y: args.toY,
-          scroll: false,
-        })
-      : start;
-  if (args.action === 'drag' && start.session !== end.session)
-    throw Error('Drag between different cross-origin frames is not supported.');
-  // Resolving a destination can scroll the page; recalculate source coordinates.
-  const from = start;
   let released = true;
   try {
-    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from });
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
     for (let clickCount = 1; clickCount <= count; clickCount++) {
       released = false;
       await call('Input.dispatchMouseEvent', {
         type: 'mousePressed',
         button,
         clickCount,
-        ...from,
+        ...at,
       });
-      if (args.action === 'drag')
-        for (let i = 1; i <= 10; i++)
-          await call('Input.dispatchMouseEvent', {
-            type: 'mouseMoved',
-            button,
-            buttons: button === 'left' ? 1 : button === 'right' ? 2 : 4,
-            x: from.x + ((end.x - from.x) * i) / 10,
-            y: from.y + ((end.y - from.y) * i) / 10,
-            ...(from.session !== undefined && { session: from.session }),
-          });
       await call('Input.dispatchMouseEvent', {
         type: 'mouseReleased',
         button,
         clickCount,
-        ...end,
+        ...at,
       });
       released = true;
     }
@@ -181,7 +157,7 @@ export async function interact(page, args, signal) {
     if (!released)
       await call(
         'Input.dispatchMouseEvent',
-        { type: 'mouseReleased', button, clickCount: count, ...end },
+        { type: 'mouseReleased', button, clickCount: count, ...at },
         AbortSignal.timeout(1000),
       );
   }

@@ -9,7 +9,6 @@ import { EndpointCache } from './endpoint.js';
 import { PageContext } from './frames.js';
 import { interact } from './interactions.js';
 import { domExpression } from './page-dom.js';
-import { checkCdpCommand, parseCdpParams } from './policy.js';
 import { combineRead, prefixRefs, readLimits } from './read.js';
 import { ScreenshotGuard } from './screenshot.js';
 import {
@@ -17,7 +16,6 @@ import {
   createDownload,
   downloadsDirectory,
   fileName,
-  hostFetch,
   resolveUploads,
   sanitizeName,
 } from './transfer.js';
@@ -25,12 +23,9 @@ import {
 const APP_URL = 'dsh-app://app/';
 const TARGET_TTL = 1000,
   CLIENT_TTL = 3000,
-  WINDOW_TTL = 5000,
   MAX_FRAMES = 20,
   CHUNK = 4 * 1024 * 1024;
 const J = JSON.stringify;
-const unloaded =
-  'Calling chat is not loaded in any DSH window. Open the chat once, then try again; do not retry in a loop.';
 
 export class SidebarController {
   constructor({ endpoint, stateDir = stateDirectory() } = {}) {
@@ -44,7 +39,6 @@ export class SidebarController {
     this.pages = new Map();
     this.queues = new Map();
     this.connecting = new Map();
-    this.windows = new Map();
     this.targetCache = null;
     this.disposed = false;
     this.screenshots = new ScreenshotGuard();
@@ -84,7 +78,6 @@ export class SidebarController {
         this.screenshots.clear(key);
       }
     c.context?.dispose();
-    c.events.length = 0;
   }
   release(c) {
     this.forget(c);
@@ -138,35 +131,10 @@ export class SidebarController {
     this.targetCache = { at: now, list };
     return list;
   }
-  // Each DSH window has its own plugin client; route to the one holding the chat.
-  async windowFor(all, session, signal) {
-    const apps = all.filter((t) => t.url === APP_URL && t.type === 'page');
-    if (!apps.length) throw new Error('DSH application window not found');
-    if (apps.length === 1) return apps[0];
-    const cached = this.windows.get(session);
-    if (cached && Date.now() - cached.at < WINDOW_TTL) {
-      const app = apps.find((a) => a.id === cached.id);
-      if (app) return app;
-    }
-    let fallback;
-    for (const app of apps) {
-      const c = await this.connection(app);
-      const state = await c
-        .evaluate(
-          `window.__dshSidebarControl?.hasSession?.(${J(session)}) ?? null`,
-          signal,
-        )
-        .catch(() => null);
-      if (!state?.loaded) continue;
-      fallback ??= app;
-      if (state.visible) {
-        fallback = app;
-        break;
-      }
-    }
-    if (!fallback) throw new Error(unloaded);
-    this.windows.set(session, { id: fallback.id, at: Date.now() });
-    return fallback;
+  appWindow(all) {
+    const app = all.find((t) => t.url === APP_URL && t.type === 'page');
+    if (!app) throw new Error('DSH application window not found');
+    return app;
   }
   async clientStatus(main, signal, force = false) {
     if (!force && main.client && Date.now() - main.client.at < CLIENT_TTL)
@@ -191,7 +159,6 @@ export class SidebarController {
       for (const c of [...this.connections.values()]) this.release(c);
       this.base = base;
       this.targetCache = null;
-      this.windows.clear();
     }
     let all;
     try {
@@ -200,7 +167,7 @@ export class SidebarController {
       this.endpoints.invalidate();
       throw await this.unavailable(error);
     }
-    const app = await this.windowFor(all, session, signal),
+    const app = this.appWindow(all),
       main = await this.connection(app);
     const invoke = (method, ...params) =>
       main.evaluate(
@@ -217,8 +184,6 @@ export class SidebarController {
       return {
         hostBuild: BUILD,
         client,
-        windows: all.filter((t) => t.url === APP_URL && t.type === 'page')
-          .length,
         ...(problem ?? { ok: true }),
       };
     if (problem) return problem;
@@ -227,8 +192,25 @@ export class SidebarController {
         'open',
         website(args.url),
         args.background !== false,
+        { deferLoad: true },
       );
       this.targetCache = null;
+      // Plugin tabs wait on about:blank so logging covers the first load.
+      if (result?.pendingLoad) {
+        try {
+          const lease = await invoke('lease', result.tabId);
+          const page = await this.locate(app, main, lease, signal);
+          page.lease = lease;
+          page.context ??= new PageContext(page);
+          await page.context.init(signal);
+          this.pages.set(J([session, result.tabId]), page);
+        } catch {
+          signal?.throwIfAborted();
+        } finally {
+          await invoke('load', result.tabId);
+        }
+        delete result.pendingLoad;
+      }
       return result;
     }
     if (args.action === 'list') return invoke('list');
@@ -389,11 +371,13 @@ export class SidebarController {
         signal,
       );
     if (args.action === 'read') return this.read(page, args, signal);
+    if (args.action === 'find')
+      return frames.evaluate(undefined, domExpression('find', args), signal);
+    if (args.action === 'logs') return frames.logs.query(args, signal);
+    if (args.action === 'drag') return this.drag(page, args, dom, signal);
     if (args.action === 'wait' && args.condition === 'networkidle')
       return this.networkIdle(page, args, signal);
-    if (
-      ['click', 'type', 'scroll', 'hover', 'drag', 'wait'].includes(args.action)
-    )
+    if (['click', 'type', 'scroll', 'hover', 'wait'].includes(args.action))
       return interact(adapter, args, signal);
     switch (args.action) {
       case 'navigate': {
@@ -413,21 +397,86 @@ export class SidebarController {
         return this.upload(page, args, session, signal, context);
       case 'download':
         return this.download(page, args, session, signal, dom);
-      case 'debug_start':
-        page.recording = true;
-        await call('Network.enable', {});
-        await call('Runtime.enable', {});
-        await call('Log.enable', {});
-        return { recording: true };
-      case 'debug_read':
-        return page.drainEvents();
-      case 'cdp':
-        return call(
-          args.method,
-          checkCdpCommand(args.method, parseCdpParams(args.params)),
-        );
       default:
         throw new Error(`Unknown action: ${args.action}`);
+    }
+  }
+  // Native HTML5 drag-and-drop needs drag events; mouse-driven drags (sliders,
+  // maps, JS libraries) only need mouse moves. Interception tells them apart.
+  async drag(page, args, dom, signal) {
+    const point = async (a) => {
+      if (a.ref || a.selector) return dom('point', a);
+      if (!Number.isFinite(a.x) || !Number.isFinite(a.y))
+        throw Error('drag needs a target and a drop target.');
+      return { x: a.x, y: a.y };
+    };
+    const from = await point(args);
+    const to = await point({
+      ref: args.toRef,
+      selector: args.toSelector,
+      x: args.toX,
+      y: args.toY,
+      scroll: false,
+    });
+    if (from.session !== to.session)
+      throw Error(
+        'Drag between different cross-origin frames is not supported.',
+      );
+    const session = from.session;
+    const call = (method, params, s = signal) =>
+      page.call(method, params, s, session);
+    const at = ({ x, y }) => ({ x, y });
+    let data = null,
+      pressed = false;
+    const off = page.on('Input.dragIntercepted', (event, sid) => {
+      if (sid === session) data = event.data;
+    });
+    try {
+      await call('Input.setInterceptDrags', { enabled: true }).catch(() => {});
+      await call('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        ...at(from),
+      });
+      await call('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        button: 'left',
+        clickCount: 1,
+        ...at(from),
+      });
+      pressed = true;
+      for (let i = 1; i <= 10; i++)
+        await call('Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          button: 'left',
+          buttons: 1,
+          x: from.x + ((to.x - from.x) * i) / 10,
+          y: from.y + ((to.y - from.y) * i) / 10,
+        });
+      await delay(50, undefined, { signal });
+      if (data)
+        for (const type of ['dragEnter', 'dragOver', 'drop'])
+          await call('Input.dispatchDragEvent', { type, ...at(to), data });
+      await call('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        button: 'left',
+        clickCount: 1,
+        ...at(to),
+      });
+      pressed = false;
+      return { dragged: true, ...(data && { html5: true }) };
+    } finally {
+      off();
+      if (pressed)
+        await call(
+          'Input.dispatchMouseEvent',
+          { type: 'mouseReleased', button: 'left', clickCount: 1, ...at(to) },
+          AbortSignal.timeout(1000),
+        ).catch(() => {});
+      await call(
+        'Input.setInterceptDrags',
+        { enabled: false },
+        AbortSignal.timeout(1000),
+      ).catch(() => {});
     }
   }
   // Direct CDP key events reached the main DSH window; route through the guest.
@@ -568,12 +617,6 @@ export class SidebarController {
     }
   }
   async screenshot(page, main, args, session, signal, dom, invoke) {
-    const format = args.format ?? 'png';
-    if (!['png', 'jpeg'].includes(format))
-      throw new Error('format must be png or jpeg');
-    const quality = args.quality ?? 80;
-    if (!Number.isInteger(quality) || quality < 1 || quality > 100)
-      throw new Error('quality must be an integer 1–100');
     const element = !!(args.ref || args.selector);
     if (element && args.fullPage)
       throw new Error('Use either fullPage or an element target, not both.');
@@ -616,8 +659,7 @@ export class SidebarController {
             .then((v) => v !== 'hidden'),
         capture: async (s) => {
           const params = {
-            format,
-            ...(format === 'jpeg' && { quality }),
+            format: 'png',
             ...(clip && { clip }),
           };
           if (args.fullPage) {
@@ -637,7 +679,7 @@ export class SidebarController {
           invoke('captureSurface', args.tabId, false).catch(() => {});
       });
     return result?.data
-      ? { ...result, mediaType: `image/${format}`, ...(clipped && { clipped }) }
+      ? { ...result, mediaType: 'image/png', ...(clipped && { clipped }) }
       : result;
   }
   async upload(page, args, session, signal, context) {
@@ -671,8 +713,7 @@ export class SidebarController {
     }
     return { uploaded: files.length, files: files.map((f) => basename(f)) };
   }
-  // In-page fetch keeps the page's cookies and origin; a CORS failure falls back
-  // to a host fetch with that URL's cookies, refused for private networks.
+  // In-page fetch keeps the page's cookies and origin.
   async download(page, args, session, signal, dom) {
     const frames = page.context;
     const { frame } = frames.route(args.ref);
@@ -734,35 +775,16 @@ export class SidebarController {
           )
           .catch(() => {});
       }
-      result = { ...info, path: file.path, bytes: file.bytes, via: 'page' };
-    } else {
-      const [referer, userAgent] = await frames.evaluate(
-        undefined,
-        '[location.href, navigator.userAgent]',
-        signal,
+      result = { ...info, path: file.path, bytes: file.bytes };
+    } else
+      throw new Error(
+        `Download failed: ${meta.error ?? 'the page could not fetch this URL'}. Cross-origin files the site does not allow to be fetched cannot be downloaded; open the file URL in a tab instead.`,
       );
-      result = {
-        ...(await hostFetch(source, {
-          signal,
-          referer,
-          userAgent,
-          open: (info) => createDownload(directory, nameFor(info)),
-          cookiesFor: async (url) =>
-            (
-              await page.call('Network.getCookies', { urls: [url] }, signal)
-            ).cookies
-              .map((c) => `${c.name}=${c.value}`)
-              .join('; '),
-        })),
-        via: 'host',
-      };
-    }
     return {
       path: result.path,
       bytes: result.bytes,
       ...(result.mediaType && { mediaType: result.mediaType }),
       url: result.url,
-      via: result.via,
     };
   }
   dispose() {

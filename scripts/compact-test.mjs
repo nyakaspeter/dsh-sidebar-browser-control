@@ -27,8 +27,12 @@ try {
   const first = await run({ action: 'read' });
   assert.equal(first.text.length, 6000);
   assert.equal(first.elements.length, 40);
-  assert.deepEqual(first.next, { textOffset: 6000, elementOffset: 40 });
-  const second = await run({ action: 'read', ...first.next });
+  assert.equal(first.next, '6000,40');
+  const second = await run({
+    action: 'read',
+    textOffset: 6000,
+    elementOffset: 40,
+  });
   assert.equal(second.elements[0].label, 'Button 39');
   assert.equal(second.elements.length, 40);
   await assert.rejects(
@@ -43,23 +47,30 @@ try {
   assert.ok(scope.text.includes('Scoped content'));
   assert.ok(!scope.text.includes('Long page'));
   await assert.rejects(run({ action: 'read', textOffset: -1 }), /nonnegative/);
-  const page = c.pages.get(JSON.stringify([s, t.tabId]));
-  assert.equal(page.events.length, 0);
-  await run({ action: 'debug_start' });
   await run({
     action: 'evaluate',
-    expression: 'for(let i=0;i<400;i++)console.log("debug fixture "+i);true',
+    expression:
+      'for(let i=0;i<400;i++)console.log("debug fixture "+i);console.error("fixture error");true',
   });
-  const debug = await run({ action: 'debug_read' });
-  assert.ok(debug.events.length <= 20);
-  assert.ok(debug.dropped > 0);
-  assert.ok(Buffer.byteLength(JSON.stringify(debug)) < 17000);
+  await new Promise((r) => setTimeout(r, 200));
+  const problems = await run({ action: 'logs', mode: 'problems' });
+  assert.deepEqual(
+    problems.console.map((x) => x.text),
+    ['fixture error'],
+  );
+  const consoleLogs = await run({ action: 'logs', mode: 'console' });
+  assert.equal(consoleLogs.console.length, 50, 'bounded');
+  assert.equal(
+    (await run({ action: 'logs', mode: 'console' })).console.length,
+    0,
+    'incremental',
+  );
   await run({ action: 'close' });
   t = null;
   assert.equal(c.pages.size, 0);
   assert.equal(c.connections.size, 1);
   console.log(
-    'PASS: compact/full/paginated/scoped reads, stale refs, bounded opt-in debug output, and connection cleanup.',
+    'PASS: compact/full/paginated/scoped reads, stale refs, bounded incremental logs, and connection cleanup.',
   );
 } finally {
   if (t) await c.run({ action: 'close', tabId: t.tabId }, s);

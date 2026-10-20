@@ -1,3 +1,4 @@
+import { PageLogs } from './logs.js';
 // Execution contexts for one guest page connection. Plugin DOM code runs in a
 // CDP isolated world: pages cannot observe or monkeypatch it, and stored element
 // references live outside the page's own JavaScript. Cross-origin iframes get
@@ -16,6 +17,7 @@ export class PageContext {
     this.ready = null;
     this.disposers = [];
     this.inflight = new Map(); // request id -> url, still loading
+    this.logs = new PageLogs(cdp);
   }
   init(signal) {
     this.ready ??= (async () => {
@@ -64,7 +66,9 @@ export class PageContext {
         this.adopt(sessionId, info);
       await cdp.call('Page.enable', {}, signal);
       await this.main(signal).catch(() => {});
+      this.logs.listen();
       await cdp.call('Network.enable', {}, signal).catch(() => {});
+      await this.logs.enable(undefined, signal);
       // Older or restricted targets may refuse auto-attach; cross-origin
       // out-of-process frames are then reported as inaccessible.
       await cdp
@@ -86,6 +90,7 @@ export class PageContext {
       this.cdp.call(method, params, undefined, sessionId);
     void call('Page.enable')
       .then(() => call('Network.enable'))
+      .then(() => this.logs.enable(sessionId))
       .then(() => call('Target.setAutoAttach', autoAttach))
       .catch(() => {});
   }
@@ -93,6 +98,7 @@ export class PageContext {
     this.worlds.delete(`${sessionId}|${frameId}`);
   }
   dispose() {
+    this.logs.dispose();
     for (const off of this.disposers.splice(0)) off();
   }
   async main(signal) {

@@ -47,8 +47,6 @@ test('CDP propagates errors, collects events, and cancels requests', async () =>
   const c = await CDP.connect(base.replace('http:', 'ws:'), base);
   try {
     assert.equal(await c.evaluate('21*2'), 42);
-    assert.equal(c.events.length, 0);
-    c.recording = true;
     await assert.rejects(c.call('bad'), /rejected/);
     const abort = new AbortController();
     const pending = c.call('hang', {}, abort.signal);
@@ -87,4 +85,20 @@ test('tool validates action and requires a live agent', async () => {
   } finally {
     cleanup.forEach((f) => f());
   }
+});
+test('context budget: tool definition and help stay small', async () => {
+  let tool;
+  apply({ effect: () => {}, tools: { register: (t) => (tool = t) } });
+  const definition = JSON.stringify({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+  });
+  // Sent with every model request; raise these limits only deliberately.
+  assert.ok(
+    definition.length < 2000,
+    `definition is ${definition.length} chars`,
+  );
+  const { browserHelp } = await import('../src/help.js');
+  assert.ok(browserHelp.length < 3500, `help is ${browserHelp.length} chars`);
 });

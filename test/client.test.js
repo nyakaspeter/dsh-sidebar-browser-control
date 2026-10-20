@@ -270,34 +270,6 @@ test('native pages retain DSH ownership on plugin disposal', async () => {
 
 // The client runs in a vm realm; compare its objects structurally.
 const plain = (value) => JSON.parse(JSON.stringify(value));
-test('hasSession reports whether this window holds and shows a chat', async () => {
-  const { api, dispose } = setup();
-  try {
-    assert.deepEqual(plain(api.hasSession('B')), {
-      loaded: true,
-      visible: true,
-    });
-    assert.deepEqual(plain(api.hasSession('A')), {
-      loaded: true,
-      visible: false,
-    });
-    assert.deepEqual(plain(api.hasSession('Z')), {
-      loaded: false,
-      visible: false,
-    });
-  } finally {
-    await dispose();
-  }
-  const broken = setup(true);
-  try {
-    assert.deepEqual(plain(broken.api.hasSession('B')), {
-      loaded: true,
-      visible: true,
-    });
-  } finally {
-    await broken.dispose();
-  }
-});
 test('status warns when DSH markup or desktop protocol stop matching', async () => {
   const healthy = setup();
   try {

@@ -41,33 +41,34 @@ Agents discover the `sidebar_browser` tool automatically. It supports reading pa
 - Existing native tabs keep DSH’s toolbar. Background tabs use a matching plugin toolbar, including when revealed.
 - Agent tabs use cookie storage private to their chat: tabs in one chat share it, but it is separate from other chats and from DSH’s own browser tabs, and it is cleared when DSH quits. Tabs you open yourself in DSH keep DSH’s storage.
 - Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (up to 500 MB, streamed to disk) are saved to a per-chat folder in the plugin’s state directory: `~/Library/Application Support/dsh-sidebar-browser-control/downloads/` on macOS, `%LOCALAPPDATA%\dsh-sidebar-browser-control\downloads\` on Windows, `~/.local/state/dsh-sidebar-browser-control/downloads/` on Linux. DSH blocks the browser’s own downloads, so the plugin fetches files through the page with its cookies. Agents move them with their normal file tools.
-- Reads are compact and paginated. Debug event collection starts only when requested.
+- Reads are plain text: the page's main content (when the page marks it) plus one line per control, paginated. `find` returns just the matching elements. The tool definition is about 480 tokens.
+- Console output and network requests are recorded per tab from the moment it opens; `logs` shows what is new since the last call.
 
 ## Tool actions
 
 One tool, `sidebar_browser`, provides these actions. Page actions generally require a `tabId` from `open` or `list`; `help` describes the full parameters.
 
-| Actions                          | Purpose                                                           |
-| -------------------------------- | ----------------------------------------------------------------- |
-| `help`, `status`, `list`         | Instructions, readiness, and this chat’s tabs                     |
-| `open`, `focus`, `hide`, `close` | Open pages and manage visibility or lifetime                      |
-| `navigate`                       | Go to a URL, back, forward, or reload                             |
-| `read`                           | Read page text and controls with temporary references             |
-| `click`, `hover`, `drag`         | Interact using references, selectors, or coordinates              |
-| `type`, `press`                  | Fill fields, select options, check boxes, and send keys/modifiers |
-| `scroll`, `wait`                 | Scroll or wait for a condition, including network idle            |
-| `dialog`                         | Inspect, accept, or dismiss JavaScript dialogs                    |
-| `upload`, `download`             | Set files on file inputs; save links or URLs with page cookies    |
-| `screenshot`                     | Capture the viewport, full page, or one element (PNG/JPEG)        |
-| `evaluate`                       | Run JavaScript in the page                                        |
-| `debug_start`, `debug_read`      | Collect and read bounded network/console events                   |
-| `cdp`                            | Send a permitted page-level DevTools command (policy-checked)     |
+| Actions                          | Purpose                                                        |
+| -------------------------------- | -------------------------------------------------------------- |
+| `help`, `status`, `list`         | Instructions, readiness, and this chat’s tabs                  |
+| `open`, `focus`, `hide`, `close` | Open pages and manage visibility or lifetime                   |
+| `navigate`                       | Go to a URL, back, forward, or reload                          |
+| `read`, `find`                   | Read text and controls, or find specific elements              |
+| `click`, `hover`, `drag`         | Interact by ref, selector or coordinates; drag supports HTML5  |
+| `type`, `press`                  | Fill fields, select options, check boxes, send keys and combos |
+| `scroll`, `wait`                 | Scroll or wait for a condition, including network idle         |
+| `dialog`                         | Inspect, accept, or dismiss JavaScript dialogs                 |
+| `upload`, `download`             | Set files on file inputs; save links or URLs with page cookies |
+| `screenshot`                     | Capture the viewport, full page, or one element                |
+| `evaluate`, `logs`               | Run JavaScript; read console output and requests               |
+
+Parameters: `action`, `tabId`, `url`, `target` (ref, CSS selector or `x,y`), `text`, `mode`, `offset`, `full`, `background`, `files`, `timeoutMs`, `retry`.
 
 ## Security
 
-The plugin’s DOM code runs in a separate JavaScript world, so pages can’t see or tamper with it. Raw `cdp` commands are limited to page-level domains. Commands that would bypass the tool’s own rules are refused: navigation and URL checks, screenshots, key routing, dialogs, uploads, downloads, cookie access across the storage partition, and closing the guest. The download fallback used when CORS blocks an in-page fetch refuses private and loopback addresses, and it looks up cookies separately for each redirect.
+The plugin’s DOM code runs in a separate JavaScript world, so pages can’t see or tamper with it. There is no raw DevTools access; navigation only accepts HTTP(S). Downloads are fetched by the page itself, so they get exactly the access the page has. `logs` never records request headers (cookies, auth), but bodies can contain private data.
 
-Local debugging listens on a random loopback port. The plugin finds it through Chromium’s `DevToolsActivePort` file and checks the browser ID before connecting, so a stale file or another process on that port is rejected. Any local process can still reach the debugging endpoint while DSH runs, and that endpoint gives broad control of the app. Website content is untrusted, and debug output may contain sensitive page data. To remove the integration and debugging flags, disable or uninstall the plugin, then quit and reopen DSH normally.
+Local debugging listens on a random loopback port. The plugin finds it through Chromium’s `DevToolsActivePort` file and checks the browser ID before connecting, so a stale file or another process on that port is rejected. Any local process can still reach the debugging endpoint while DSH runs, and that endpoint gives broad control of the app. Website content is untrusted, and logs may contain sensitive page data. To remove the integration and debugging flags, disable or uninstall the plugin, then quit and reopen DSH normally.
 
 ## Limitations
 

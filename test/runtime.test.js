@@ -45,7 +45,6 @@ test('closing a connection clears owned page bookkeeping and screenshot failure 
   const c = new SidebarController();
   let closed = false;
   const page = {
-    events: [{}],
     close() {
       closed = true;
     },
@@ -58,32 +57,5 @@ test('closing a connection clears owned page bookkeeping and screenshot failure 
   assert.equal(c.connections.size, 0);
   assert.equal(c.pages.size, 0);
   assert.equal(c.screenshots.blocked.size, 0);
-  assert.deepEqual(page.events, []);
   c.dispose();
-});
-test('debug events are opt-in and bounded by bytes and drain size', () => {
-  const ws = new EventEmitter();
-  ws.close = () => {};
-  const c = new CDP(ws);
-  const send = () =>
-    ws.emit(
-      'message',
-      JSON.stringify({
-        method: 'Log.entryAdded',
-        params: { text: 'x'.repeat(10000) },
-      }),
-    );
-  send();
-  assert.equal(c.events.length, 0);
-  c.recording = true;
-  for (let i = 0; i < 200; i++) send();
-  assert.ok(c.events.length <= 100);
-  assert.ok(c.eventBytes <= 64000);
-  assert.ok(c.droppedEvents > 0);
-  const result = c.drainEvents();
-  assert.ok(result.events.length <= 20);
-  assert.ok(Buffer.byteLength(JSON.stringify(result.events)) < 16500);
-  assert.ok(result.remaining > 0);
-  assert.ok(result.dropped > 0);
-  c.close();
 });

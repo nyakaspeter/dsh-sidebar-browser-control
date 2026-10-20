@@ -43,10 +43,6 @@ export class CDP {
     // Flattened child sessions (out-of-process iframes) known to this socket,
     // so modules that start listening late still see earlier attachments.
     this.children = new Map();
-    this.events = [];
-    this.recording = false;
-    this.eventBytes = 0;
-    this.droppedEvents = 0;
     this.dialog = null;
     this.lastDialog = null;
     ws.on('message', (data) => {
@@ -95,7 +91,6 @@ export class CDP {
         } catch (error) {
           console.error(error);
         }
-      if (this.recording) this.recordEvent(message);
     });
     ws.on('close', () => this.fail(new Error('CDP connection closed')));
     ws.on('error', (error) => this.fail(error));
@@ -108,42 +103,6 @@ export class CDP {
       set.delete(listener);
       if (!set.size && this.listeners.get(method) === set)
         this.listeners.delete(method);
-    };
-  }
-  recordEvent(message) {
-    let text = JSON.stringify(message);
-    if (text.length > 2000) {
-      message = {
-        method: message.method,
-        truncated: true,
-        preview: text.slice(0, 1800),
-      };
-      text = JSON.stringify(message);
-    }
-    const bytes = Buffer.byteLength(text);
-    this.events.push(message);
-    this.eventBytes += bytes;
-    while (this.events.length > 100 || this.eventBytes > 64000) {
-      this.eventBytes -= Buffer.byteLength(JSON.stringify(this.events.shift()));
-      this.droppedEvents++;
-    }
-  }
-  drainEvents() {
-    const events = [];
-    let bytes = 0;
-    while (this.events.length && events.length < 20) {
-      const size = Buffer.byteLength(JSON.stringify(this.events[0]));
-      if (events.length && bytes + size > 16000) break;
-      events.push(this.events.shift());
-      bytes += size;
-      this.eventBytes -= size;
-    }
-    const dropped = this.droppedEvents;
-    this.droppedEvents = 0;
-    return {
-      events,
-      remaining: this.events.length,
-      ...(dropped ? { dropped } : {}),
     };
   }
   fail(error) {

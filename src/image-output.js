@@ -28,8 +28,7 @@ export async function admitScreenshot(ctx, exec, result) {
     const [attachment] = await attachments.saveImages([
       {
         data,
-        mediaType:
-          result.mediaType === 'image/jpeg' ? 'image/jpeg' : 'image/png',
+        mediaType: 'image/png',
       },
     ]);
     if (!attachment?.attachmentId)
@@ -45,6 +44,7 @@ export async function admitScreenshot(ctx, exec, result) {
   }
 }
 export function renderBrowserOutput(args, value) {
+  if (args.action !== 'screenshot') return [{ type: 'text', text: value }];
   const result = JSON.parse(value);
   return args.action === 'screenshot' && result?.attachment?.attachmentId
     ? [

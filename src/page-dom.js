@@ -50,25 +50,111 @@ export function pageDOM(action, args) {
     } else throw Error('Provide ref or selector.');
     return e;
   }
+  const CONTROLS =
+    'a,button,input,textarea,select,[role],[contenteditable="true"],summary';
+  // Compact control record; the host turns it into one text line.
+  function describe(e, ref, full) {
+    const kinds = {
+      A: 'link',
+      BUTTON: 'button',
+      SELECT: 'select',
+      TEXTAREA: 'textbox',
+      SUMMARY: 'summary',
+    };
+    const inputs = {
+      checkbox: 'checkbox',
+      radio: 'radio',
+      submit: 'button',
+      button: 'button',
+      reset: 'button',
+      image: 'button',
+      range: 'slider',
+      file: 'file',
+    };
+    const kind =
+      e.getAttribute('role') ||
+      kinds[e.tagName] ||
+      (e.tagName === 'INPUT'
+        ? (inputs[e.type] ?? 'textbox')
+        : e.isContentEditable
+          ? 'textbox'
+          : e.tagName.toLowerCase());
+    const label = (
+      e.getAttribute('aria-label') ||
+      [...(e.labels ?? [])].map((l) => l.innerText).join(' ') ||
+      e.innerText ||
+      e.getAttribute('placeholder') ||
+      e.getAttribute('title') ||
+      e.getAttribute('alt') ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, full ? 200 : 80);
+    const item = { ref, kind };
+    if (label) item.label = label;
+    if (kind === 'textbox' && e.type && !['text', 'textarea'].includes(e.type))
+      item.inputType = e.type;
+    if (e.disabled) item.disabled = true;
+    if (
+      typeof e.checked === 'boolean' &&
+      ['checkbox', 'radio'].includes(e.type)
+    )
+      item.checked = e.checked;
+    if (
+      typeof e.value === 'string' &&
+      e.value &&
+      e.type !== 'password' &&
+      !['checkbox', 'radio', 'submit', 'button'].includes(e.type) &&
+      e.tagName !== 'BUTTON'
+    )
+      item.value = e.value.slice(0, full ? 300 : 100);
+    const href = e.tagName === 'A' ? e.getAttribute('href') && e.href : '';
+    if (href && !href.startsWith('javascript:')) {
+      const u = new URL(href);
+      item.href =
+        u.origin === location.origin ? u.pathname + u.search + u.hash : href;
+    }
+    if (e.tagName === 'SELECT')
+      item.options = [...e.options]
+        .slice(0, full ? 50 : 12)
+        .map((o) => (o.selected ? '*' : '') + o.label);
+    return item;
+  }
+  // Refs are r<read>.<n>: short, and a ref from an older read never resolves.
+  function register(fresh) {
+    const prev = globalThis[slot];
+    if (fresh || !prev)
+      globalThis[slot] = {
+        epoch: (prev?.epoch ?? 0) + 1,
+        next: 1,
+        refs: new Map(),
+      };
+    const state = globalThis[slot];
+    return (e) => {
+      for (const [ref, el] of state.refs) if (el === e) return ref;
+      const ref = `r${state.epoch}.${state.next++}`;
+      state.refs.set(ref, e);
+      return ref;
+    };
+  }
   if (action === 'read') {
     // Collects up to fixed caps; the host paginates across this frame and any
     // cross-origin frames read in their own isolated worlds.
-    const scope = args.ref || args.selector ? target() : null;
-    const epoch = crypto.randomUUID().slice(0, 8),
-      refs = new Map();
-    globalThis[slot] = { epoch, refs };
+    const scoped = args.ref || args.selector ? target() : null;
+    const refFor = register(true);
     const full = args.detail === 'full',
       maxText = 400000,
       maxElements = 2000,
       frameOffset = args.frameOffset ?? { x: 0, y: 0 },
       viewport = args.viewport ?? { width: innerWidth, height: innerHeight };
-    const readRoots = scope ? [{ root: scope, offset: { x: 0, y: 0 } }] : roots;
+    const readRoots = scoped
+      ? [{ root: scoped, offset: { x: 0, y: 0 } }]
+      : roots;
     const elements = [];
     let total = 0;
     for (const { root, offset } of readRoots) {
-      for (const e of root.querySelectorAll(
-        'a,button,input,textarea,select,[role],[contenteditable="true"],summary',
-      )) {
+      for (const e of root.querySelectorAll(CONTROLS)) {
         if (!visible(e)) continue;
         const r = e.getBoundingClientRect(),
           x = offset.x + frameOffset.x,
@@ -81,61 +167,105 @@ export function pageDOM(action, args) {
         if (args.viewportOnly && !inViewport) continue;
         total++;
         if (elements.length >= maxElements) continue;
-        const ref = `r${epoch}-${elements.length + 1}`;
-        refs.set(ref, e);
-        elements.push({
-          ref,
-          tag: e.tagName.toLowerCase(),
-          role: e.getAttribute('role') || undefined,
-          label: (
-            e.getAttribute('aria-label') ||
-            [...(e.labels ?? [])].map((l) => l.innerText).join(' ') ||
-            e.innerText ||
-            e.getAttribute('placeholder') ||
-            ''
-          ).slice(0, full ? 200 : 120),
-          type: e.type,
-          disabled: e.disabled || undefined,
-          checked: typeof e.checked === 'boolean' ? e.checked : undefined,
-          value:
-            e.type === 'password'
-              ? undefined
-              : typeof e.value === 'string'
-                ? e.value.slice(0, full ? 500 : 200)
-                : undefined,
-          href: e.href,
-          inViewport,
-          options:
-            e.tagName === 'SELECT'
-              ? [...e.options]
-                  .map((o) => ({
-                    value: o.value,
-                    label: o.label,
-                    selected: o.selected,
-                  }))
-                  .slice(0, full ? 100 : 20)
-              : undefined,
-        });
+        elements.push(describe(e, refFor(e), full));
       }
     }
-    const text = readRoots
-      .map(
-        ({ root }) =>
-          root.body?.innerText ??
-          root.innerText ??
-          (root.host ? root.textContent : ''),
-      )
+    // Text comes from the page's marked main region unless the whole page is
+    // asked for; controls always cover the whole page.
+    let main = null;
+    if (!scoped && args.scope !== 'page' && !args.frameOffset) {
+      main =
+        [...document.querySelectorAll('main, [role="main"]')].find(visible) ??
+        null;
+      const articles = [...document.querySelectorAll('article')].filter(
+        visible,
+      );
+      if (!main && articles.length === 1) main = articles[0];
+      if (main && main.innerText.trim().length < 200) main = null;
+    }
+    const text = (
+      main
+        ? [main.innerText]
+        : readRoots.map(
+            ({ root }) =>
+              root.body?.innerText ??
+              root.innerText ??
+              (root.host ? root.textContent : ''),
+          )
+    )
       .filter(Boolean)
-      .join('\n');
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n');
     return {
       url: location.href,
       title: document.title,
       readyState: document.readyState,
+      ...(main ? { scope: 'main' } : {}),
       text: text.slice(0, maxText),
       textLength: text.length,
       elements,
       total,
       ...(frames.length ? { inaccessibleFrames: frames } : {}),
+    };
+  }
+  if (action === 'find') {
+    // Controls whose label, value or link matches first, then the smallest
+    // visible elements whose text matches. Refs join the latest read's refs.
+    const query = String(args.query).toLowerCase();
+    const refFor = register(false);
+    const scored = [];
+    for (const { root } of roots)
+      for (const e of root.querySelectorAll(CONTROLS)) {
+        if (!visible(e)) continue;
+        const item = describe(e, '', false);
+        const hay = [
+          item.label,
+          item.value,
+          item.href,
+          e.getAttribute('name'),
+          e.id,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const at = hay.indexOf(query);
+        if (at < 0) continue;
+        scored.push({
+          e,
+          score: item.label?.toLowerCase() === query ? 0 : at === 0 ? 1 : 2,
+        });
+      }
+    scored.sort((a, b) => a.score - b.score);
+    const found = scored
+      .slice(0, 8)
+      .map(({ e }) => describe(e, refFor(e), false));
+    if (found.length < 8)
+      for (const { root } of roots) {
+        const walker = (root.ownerDocument ?? root).createTreeWalker(
+          root,
+          NodeFilter.SHOW_TEXT,
+        );
+        const seen = new Set();
+        for (
+          let n = walker.nextNode();
+          n && found.length < 8;
+          n = walker.nextNode()
+        ) {
+          if (!n.textContent.toLowerCase().includes(query)) continue;
+          const e = n.parentElement;
+          if (!e || seen.has(e) || e.closest(CONTROLS) || !visible(e)) continue;
+          seen.add(e);
+          found.push({
+            ref: refFor(e),
+            kind: 'text',
+            label: e.innerText.replace(/\s+/g, ' ').trim().slice(0, 120),
+          });
+        }
+      }
+    return {
+      url: location.href,
+      found,
+      ...(frames.length ? { inaccessibleFrames: frames.length } : {}),
     };
   }
   if (action === 'wait') {

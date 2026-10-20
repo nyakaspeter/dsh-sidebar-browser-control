@@ -25,7 +25,8 @@ export function combineRead(parts, args, inaccessibleFrames = []) {
   let text = main.text,
     textLength = main.textLength ?? main.text.length;
   for (const frame of frames) {
-    if (!frame.text) continue;
+    // Main-content reads skip frame text; frame controls are still listed.
+    if (!frame.text || main.scope === 'main') continue;
     const header = `\n\n[Frame ${frame.url}]\n`;
     text += header + frame.text;
     textLength += header.length + (frame.textLength ?? frame.text.length);
@@ -38,15 +39,13 @@ export function combineRead(parts, args, inaccessibleFrames = []) {
     url: main.url,
     title: main.title,
     readyState: main.readyState,
+    ...(main.scope && { scope: main.scope }),
     text: text.slice(textOffset, textOffset + maxText),
     elements: elements.slice(elementOffset, elementOffset + maxElements),
-    truncated: moreText || moreElements,
+    totalElements: total,
     ...(moreText || moreElements
       ? {
-          next: {
-            textOffset: Math.min(textLength, textOffset + maxText),
-            elementOffset: Math.min(total, elementOffset + maxElements),
-          },
+          next: `${Math.min(textLength, textOffset + maxText)},${Math.min(total, elementOffset + maxElements)}`,
         }
       : {}),
     ...(frames.length
