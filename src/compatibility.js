@@ -1,6 +1,5 @@
 import metadata from '../package.json' with { type: 'json' };
 export const BUILD = metadata.version;
-export const PROTOCOL = 2;
 export function compatibility(client) {
   if (!client)
     return {
@@ -17,7 +16,8 @@ export function compatibility(client) {
       retryable: false,
       message: `This DSH version lacks required browser APIs: ${client.compatibilityError}. Update the plugin for this DSH version. Do not retry or restart in a loop.`,
     };
-  if (client.version !== PROTOCOL || client.build !== BUILD)
+  // Host and client ship together; any build difference is a stale install.
+  if (client.build !== BUILD)
     return {
       ok: false,
       code: 'PLUGIN_VERSION_MISMATCH',

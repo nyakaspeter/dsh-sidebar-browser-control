@@ -35,7 +35,6 @@ export function formatRead(result) {
     lines.push(`Frames read: ${result.frames.map((f) => f.url).join(', ')}`);
   if (result.inaccessibleFrames?.length)
     lines.push(`Unreadable frames: ${result.inaccessibleFrames.length}`);
-  if (result.blocking) lines.push(`Blocking: ${quote(result.blocking)}`);
   return lines.join('\n');
 }
 
@@ -52,7 +51,7 @@ const short = (url, max = 150) =>
   url.length > max ? `${url.slice(0, max - 1)}…` : url;
 const size = (n) =>
   n === undefined ? '' : n < 1024 ? `${n}B` : `${(n / 1024).toFixed(1)}kB`;
-export function formatRequest(r) {
+function formatRequest(r) {
   const status = r.error ? `ERR ${r.error}` : (r.status ?? '...');
   const extra = [r.ms !== undefined && `${r.ms}ms`, size(r.size)]
     .filter(Boolean)

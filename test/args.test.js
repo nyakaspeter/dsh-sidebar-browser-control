@@ -35,9 +35,17 @@ test('modes map onto internal arguments', () => {
     (({ key, modifiers }) => ({ key, modifiers }))(
       n({ action: 'press', text: 'Control+Shift+k' }),
     ),
-    { key: 'k', modifiers: 'Control+Shift' },
+    { key: 'k', modifiers: ['Control', 'Shift'] },
   );
   assert.equal(n({ action: 'press', text: 'Control++' }).key, '+');
+  assert.throws(
+    () => n({ action: 'press', text: 'Ctrl+a' }),
+    /Alt, Control, Meta or Shift/,
+  );
+  assert.throws(
+    () => n({ action: 'wait', tabId: 't', mode: 'text' }),
+    /wait text requires text/,
+  );
   assert.equal(n({ action: 'scroll', mode: 'up' }).deltaY, -600);
   assert.equal(
     n({ action: 'scroll', target: 'r1.1', mode: 'into' }).intoView,

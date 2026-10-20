@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { BUILD, PROTOCOL, compatibility } from '../src/compatibility.js';
+import { BUILD, compatibility } from '../src/compatibility.js';
 test('compatible client succeeds and unsupported hosts return actionable non-retryable failures', () => {
-  assert.equal(compatibility({ version: PROTOCOL, build: BUILD }), null);
+  assert.equal(compatibility({ build: BUILD }), null);
   for (const [value, code] of [
     [null, 'BROWSER_UNAVAILABLE'],
     [{ compatibilityError: 'browser.acquire' }, 'DSH_INCOMPATIBLE'],
-    [{ version: 99, build: BUILD }, 'PLUGIN_VERSION_MISMATCH'],
-    [{ version: PROTOCOL, build: 'old' }, 'PLUGIN_VERSION_MISMATCH'],
+    [{ build: 'old' }, 'PLUGIN_VERSION_MISMATCH'],
   ]) {
     const result = compatibility(value);
     assert.equal(result.code, code);

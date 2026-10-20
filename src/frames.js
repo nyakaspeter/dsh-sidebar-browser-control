@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import { deadline } from './interactions.js';
 import { PageLogs } from './logs.js';
 // Execution contexts for one guest page connection. Plugin DOM code runs in a
 // CDP isolated world: pages cannot observe or monkeypatch it, and stored element
@@ -30,8 +32,8 @@ export class PageContext {
         cdp.on('Page.frameDetached', ({ frameId }, sessionId) =>
           this.forget(sessionId, frameId),
         ),
-        cdp.on('Target.attachedToTarget', (event, parent) =>
-          this.adopt(event.sessionId, { ...event.targetInfo, parent }),
+        cdp.on('Target.attachedToTarget', (event) =>
+          this.adopt(event.sessionId, event.targetInfo),
         ),
         cdp.on('Target.detachedFromTarget', ({ sessionId }) => {
           this.sessions.delete(sessionId);
@@ -41,8 +43,6 @@ export class PageContext {
       );
       // Track requests from first attach so network idle also sees requests
       // that started before a wait began.
-      // An out-of-process iframe's document request starts in this session
-      // but finishes in the iframe's own session; request ids are unique.
       const done = ({ requestId }) => this.inflight.delete(requestId);
       this.disposers.push(
         cdp.on('Network.requestWillBeSent', (event, sessionId) => {
@@ -65,6 +65,10 @@ export class PageContext {
       for (const [sessionId, info] of cdp.children ?? [])
         this.adopt(sessionId, info);
       await cdp.call('Page.enable', {}, signal);
+      // Background pages never have window focus; let them act focused.
+      await cdp
+        .call('Emulation.setFocusEmulationEnabled', { enabled: true }, signal)
+        .catch(() => {});
       await this.main(signal).catch(() => {});
       this.logs.listen();
       await cdp.call('Network.enable', {}, signal).catch(() => {});
@@ -84,7 +88,6 @@ export class PageContext {
     this.sessions.set(sessionId, {
       targetId: info.targetId,
       url: info.url,
-      parent: info.parent,
     });
     const call = (method, params = {}) =>
       this.cdp.call(method, params, undefined, sessionId);
@@ -154,6 +157,105 @@ export class PageContext {
         if (frame.main) this.mainFrame = null;
         if (frame.main) frame = await this.main(signal);
       }
+    }
+  }
+  // Watches the top-level document around an action that may navigate it.
+  // settle() gives the action a short grace period to start a navigation and,
+  // if one started, waits until it finishes loading.
+  watchNavigation() {
+    const state = {
+      started: false,
+      url: null,
+      sameDocument: null,
+      loaded: false,
+      dialog: false,
+    };
+    const top = (frameId, sessionId) =>
+      !sessionId && (!this.mainFrame || frameId === this.mainFrame);
+    const start = ({ frameId }, sessionId) => {
+      if (top(frameId, sessionId)) {
+        state.started = true;
+        state.loaded = false;
+      }
+    };
+    const offs = [
+      this.cdp.on('Page.frameRequestedNavigation', start),
+      this.cdp.on('Page.frameStartedLoading', start),
+      this.cdp.on('Page.frameNavigated', ({ frame }, sessionId) => {
+        if (sessionId || frame.parentId) return;
+        state.started = true;
+        state.url = frame.url;
+      }),
+      this.cdp.on('Page.navigatedWithinDocument', (event, sessionId) => {
+        if (top(event.frameId, sessionId)) state.sameDocument = event.url;
+      }),
+      this.cdp.on('Page.frameStoppedLoading', ({ frameId }, sessionId) => {
+        if (state.started && top(frameId, sessionId)) state.loaded = true;
+      }),
+      this.cdp.on('Page.javascriptDialogOpening', (_, sessionId) => {
+        if (!sessionId) state.dialog = true;
+      }),
+    ];
+    return {
+      settle: async (timeoutMs = 10000, signal, grace = 250) => {
+        const { bound, combined } = deadline(timeoutMs, signal);
+        const startBy = Date.now() + grace;
+        try {
+          while (true) {
+            if (state.dialog)
+              return {
+                dialog: true,
+                message: 'A dialog opened; inspect it before continuing.',
+              };
+            if (state.started && state.loaded) {
+              const url = state.url ?? state.sameDocument;
+              return { ...(url && { url }), loaded: true };
+            }
+            if (!state.started && Date.now() >= startBy)
+              return state.sameDocument ? { url: state.sameDocument } : null;
+            await delay(25, undefined, { signal: combined });
+          }
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (bound.aborted)
+            return {
+              ...(state.url && { url: state.url }),
+              loaded: false,
+              message:
+                'Navigation is still loading; wait or read before acting.',
+            };
+          throw error;
+        }
+      },
+      dispose: () => offs.splice(0).forEach((off) => off()),
+    };
+  }
+  // Idle: the document finished loading (covers requests from before the
+  // plugin attached) and no tracked request was in flight for 500 ms.
+  async networkIdle(timeoutMs, signal) {
+    const { bound, combined } = deadline(timeoutMs, signal);
+    try {
+      let idleSince = Date.now();
+      while (true) {
+        const loaded =
+          (await this.evaluate(undefined, 'document.readyState', combined)) ===
+          'complete';
+        if (!loaded || this.inflight.size) idleSince = Date.now();
+        else if (Date.now() - idleSince >= 500) return { matched: true };
+        await delay(50, undefined, { signal: combined });
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (bound.aborted)
+        return {
+          matched: false,
+          code: 'WAIT_TIMEOUT',
+          pendingRequests: this.inflight.size,
+          pending: [...this.inflight.values()].slice(0, 5),
+          message:
+            'The network did not go idle within the deadline (long-polling pages may never idle). Read the page before deciding what to do next.',
+        };
+      throw error;
     }
   }
   // Frames whose content the main-world walk cannot reach: in-process frames
@@ -251,7 +353,7 @@ export class PageContext {
     }
     throw new Error('Frame position is unavailable; read the page again.');
   }
-  // Frame-qualified references: "f2:r1a2b3c4-5" routes to registered frame 2.
+  // Frame-qualified references: "f2:r3.5" routes to registered frame 2.
   register(frame) {
     const key = `f${this.refFrames.size + 1}`;
     this.refFrames.set(key, frame);

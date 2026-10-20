@@ -192,3 +192,76 @@ test('iframe sessions attached before init are adopted with network events', asy
     cdp.calls.some(([sid, m]) => sid === 'early' && m === 'Network.enable'),
   );
 });
+test('networkidle waits for load and for requests already in flight', async () => {
+  let state = 'interactive';
+  const cdp = fakeCdp({
+    'Page.getFrameTree': () => ({ frameTree: tree('main', 'https://a.test') }),
+    'Page.createIsolatedWorld': () => ({ executionContextId: 1 }),
+    'Runtime.evaluate': () => ({ result: { value: state } }),
+  });
+  const ctx = new PageContext(cdp);
+  ctx.inflight.set('started-before-wait', 'https://x/a');
+  const started = Date.now();
+  const waiting = ctx.networkIdle(3000);
+  await new Promise((r) => setTimeout(r, 150));
+  state = 'complete';
+  await new Promise((r) => setTimeout(r, 150));
+  ctx.inflight.delete('started-before-wait');
+  assert.deepEqual(await waiting, { matched: true });
+  assert.ok(Date.now() - started >= 750, 'load, then 500 ms of quiet');
+  ctx.inflight.set('poll', 'https://x/poll');
+  const result = await ctx.networkIdle(200);
+  assert.equal(result.code, 'WAIT_TIMEOUT');
+  assert.equal(result.pendingRequests, 1);
+  assert.deepEqual(result.pending, ['https://x/poll']);
+  await assert.rejects(ctx.networkIdle(20000), /timeoutMs/);
+});
+test('navigation watcher reports loads, same-document changes and no-ops', async () => {
+  const cdp = fakeCdp({
+    'Page.getFrameTree': () => ({ frameTree: tree('main', 'https://a.test') }),
+  });
+  const ctx = new PageContext(cdp);
+  await ctx.init();
+  // Nothing happens: the grace period ends with no navigation.
+  let watch = ctx.watchNavigation();
+  const started = Date.now();
+  assert.equal(await watch.settle(1000, undefined, 50), null);
+  assert.ok(Date.now() - started < 500);
+  watch.dispose();
+  // A full navigation waits until the new document stops loading.
+  watch = ctx.watchNavigation();
+  const settled = watch.settle(2000, undefined, 50);
+  cdp.emit('Page.frameRequestedNavigation', { frameId: 'main' });
+  cdp.emit('Page.frameStartedLoading', { frameId: 'child' }, 'oopif');
+  await new Promise((r) => setTimeout(r, 100));
+  cdp.emit('Page.frameNavigated', {
+    frame: { id: 'main', url: 'https://a.test/next' },
+  });
+  cdp.emit('Page.frameStoppedLoading', { frameId: 'main' });
+  assert.deepEqual(await settled, { url: 'https://a.test/next', loaded: true });
+  watch.dispose();
+  // Same-document (history API) changes are reported without waiting.
+  watch = ctx.watchNavigation();
+  const spa = watch.settle(2000, undefined, 50);
+  cdp.emit('Page.navigatedWithinDocument', {
+    frameId: 'main',
+    url: 'https://a.test/#x',
+  });
+  assert.deepEqual(await spa, { url: 'https://a.test/#x' });
+  watch.dispose();
+  // A slow load ends at the deadline with a structured result.
+  watch = ctx.watchNavigation();
+  const slow = watch.settle(100, undefined, 50);
+  cdp.emit('Page.frameStartedLoading', { frameId: 'main' });
+  assert.equal((await slow).loaded, false);
+  watch.dispose();
+  // Child-frame and other-session activity is not a top-level navigation.
+  watch = ctx.watchNavigation();
+  const other = watch.settle(1000, undefined, 50);
+  cdp.emit('Page.frameStartedLoading', { frameId: 'iframe' });
+  cdp.emit('Page.frameNavigated', {
+    frame: { id: 'iframe', parentId: 'main', url: 'x' },
+  });
+  assert.equal(await other, null);
+  watch.dispose();
+});

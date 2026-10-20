@@ -46,7 +46,7 @@ export async function admitScreenshot(ctx, exec, result) {
 export function renderBrowserOutput(args, value) {
   if (args.action !== 'screenshot') return [{ type: 'text', text: value }];
   const result = JSON.parse(value);
-  return args.action === 'screenshot' && result?.attachment?.attachmentId
+  return result?.attachment?.attachmentId
     ? [
         { type: 'image', attachment: result.attachment },
         ...(result.displayMarkdown

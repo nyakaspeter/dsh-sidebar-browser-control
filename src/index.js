@@ -5,6 +5,7 @@ import { SidebarController } from './controller.js';
 import { formatFind, formatLogs, formatRead } from './format.js';
 import { browserHelp, helpSections } from './help.js';
 import { admitScreenshot, renderBrowserOutput } from './image-output.js';
+import { sweepAllPartials } from './transfer.js';
 export const name = 'sidebar-browser-control';
 export const inject = ['tools'];
 
@@ -14,6 +15,8 @@ const DESCRIPTION =
 
 export function apply(ctx) {
   void ensureDesktopDebugging().catch(() => {});
+  // Downloads cut off by a quit or crash leave hidden partial files.
+  void sweepAllPartials().catch(() => {});
   const controller = new SidebarController();
   ctx.effect(() => () => controller.dispose());
   const workingDirectory = async (exec) => {

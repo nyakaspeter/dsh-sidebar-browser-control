@@ -31,6 +31,7 @@ function fakePage({ dom = {}, calls = [], handlers = {} } = {}) {
         ? { frame: { sessionId: 'child', frameId: 'f' }, ref: ref.slice(3) }
         : { frame: undefined, ref },
     offset: async () => ({ x: 100, y: 200 }),
+    watchNavigation: () => ({ settle: async () => null, dispose() {} }),
     async evaluate(frame, expression, _s, options) {
       for (const [needle, value] of Object.entries(dom))
         if (expression.includes(needle))
@@ -42,15 +43,9 @@ function fakePage({ dom = {}, calls = [], handlers = {} } = {}) {
   };
   return page;
 }
-const run = (c, page, args, context = {}) =>
-  c.pageAction(
-    page,
-    { evaluate: async () => 'visible' },
-    args,
-    'chat',
-    undefined,
-    context,
-  );
+const main = { evaluate: async () => 'visible' };
+const run = (c, page, args, context = {}, invoke = async () => null) =>
+  c.pageAction(page, args, { main, session: 'chat', context, invoke });
 
 test('upload resolves files and targets the frame session of the input', async () => {
   const state = await dir(),
@@ -143,35 +138,6 @@ test('element screenshots clip to the element in page coordinates', async () => 
   );
   c.dispose();
 });
-test('networkidle waits for load and for requests already in flight', async () => {
-  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
-  let state = 'interactive';
-  const page = fakePage({ dom: { 'document.readyState': () => state } });
-  page.context.inflight = new Map([['started-before-wait', 'https://x/a']]);
-  const started = Date.now();
-  const waiting = run(c, page, {
-    action: 'wait',
-    condition: 'networkidle',
-    timeoutMs: 3000,
-  });
-  await new Promise((r) => setTimeout(r, 150));
-  state = 'complete';
-  await new Promise((r) => setTimeout(r, 150));
-  page.context.inflight.delete('started-before-wait');
-  assert.deepEqual(await waiting, { matched: true });
-  assert.ok(Date.now() - started >= 750, 'load, then 500 ms of quiet');
-  const stuck = fakePage({ dom: { 'document.readyState': 'complete' } });
-  stuck.context.inflight = new Map([['poll', 'https://x/poll']]);
-  const result = await run(c, stuck, {
-    action: 'wait',
-    condition: 'networkidle',
-    timeoutMs: 200,
-  });
-  assert.equal(result.code, 'WAIT_TIMEOUT');
-  assert.equal(result.pendingRequests, 1);
-  assert.deepEqual(result.pending, ['https://x/poll']);
-  c.dispose();
-});
 test('downloads stream from the page in chunks into the chat downloads folder', async () => {
   const state = await dir();
   const c = new SidebarController({
@@ -182,11 +148,13 @@ test('downloads stream from the page in chunks into the chat downloads folder', 
     dom: {
       '"href"': { url: 'https://site.test/files/report.pdf' },
       'async function inPageFetch': {
-        size: 5,
         type: 'application/pdf',
         url: 'https://site.test/files/report.pdf',
       },
-      'async function readChunk': Buffer.from('%PDF!').toString('base64'),
+      'async function readChunk': {
+        data: Buffer.from('%PDF!').toString('base64'),
+        done: true,
+      },
       delete: true,
     },
   });
@@ -218,7 +186,7 @@ test('a download the page cannot fetch fails with guidance instead of fetching h
       tabId: 't',
       url: 'http://127.0.0.1:9/x',
     }),
-    /cannot be downloaded/,
+    /can only fetch files its site allows/,
   );
   await assert.rejects(
     run(c, page, { action: 'download', tabId: 't', url: 'file:///etc/passwd' }),
@@ -234,12 +202,10 @@ test('hidden native tabs report TAB_HIDDEN without attempting a capture', async 
     calls.push([method, ...params]);
     return { native: true, visible: false };
   };
-  const result = await c.pageAction(
+  const result = await run(
+    c,
     page,
-    { evaluate: async () => 'visible' },
     { action: 'screenshot', tabId: 'n1' },
-    'chat',
-    undefined,
     {},
     invoke,
   );
@@ -260,12 +226,10 @@ test('parked plugin tabs are raised for the capture and restored afterwards', as
     order.push(`surface:${active}`);
     return { native: false, visible: false, raised: true };
   };
-  const result = await c.pageAction(
+  const result = await run(
+    c,
     page,
-    { evaluate: async () => 'visible' },
     { action: 'screenshot', tabId: 'p1' },
-    'chat',
-    undefined,
     {},
     invoke,
   );
@@ -274,22 +238,27 @@ test('parked plugin tabs are raised for the capture and restored afterwards', as
   assert.deepEqual(order, ['surface:true', 'capture', 'surface:false']);
   c.dispose();
 });
-test('multi-chunk page downloads are appended to disk in order', async () => {
+test('page download streams are appended to disk until done', async () => {
   const state = await dir();
   const c = new SidebarController({
     endpoint: 'http://127.0.0.1:1',
     stateDir: state,
   });
-  const chunk = 4 * 1024 * 1024;
+  const chunks = ['A', 'B', ''];
+  let cleaned = false;
   const page = fakePage({
     dom: {
-      'async function inPageFetch': {
-        size: chunk + 3,
-        url: 'https://site.test/big.bin',
+      'async function inPageFetch': { url: 'https://site.test/big.bin' },
+      'async function readChunk': () => {
+        const next = chunks.shift();
+        return {
+          data: Buffer.from(next).toString('base64'),
+          done: !chunks.length,
+        };
       },
-      'async function readChunk': (_frame, _o, expression) =>
-        Buffer.from(expression.includes(`,0,`) ? 'A' : 'B').toString('base64'),
-      delete: true,
+      delete: () => {
+        cleaned = true;
+      },
     },
   });
   const result = await run(c, page, {
@@ -299,6 +268,8 @@ test('multi-chunk page downloads are appended to disk in order', async () => {
   });
   assert.equal(await readFile(result.path, 'utf8'), 'AB');
   assert.equal(result.bytes, 2);
+  await new Promise((r) => setImmediate(r));
+  assert.ok(cleaned, 'the page stream is released');
   c.dispose();
 });
 test('drag completes native HTML5 drags and plain mouse drags', async () => {
@@ -352,8 +323,7 @@ test('plugin tabs load only after logging is attached', async () => {
     const { BUILD } = await import('../src/compatibility.js');
     c.connection = async () => ({
       async evaluate(expression) {
-        if (expression.includes('status?.()'))
-          return { version: 2, build: BUILD };
+        if (expression.includes('status?.()')) return { build: BUILD };
         const [, method, args] = /api\["(\w+)"\]\(\.\.\.(\[.*\])\)/.exec(
           expression,
         );
@@ -385,4 +355,132 @@ test('plugin tabs load only after logging is attached', async () => {
     ]);
     c.dispose();
   }
+});
+test('a download that fails midway leaves no partial file', async () => {
+  const state = await dir();
+  const c = new SidebarController({
+    endpoint: 'http://127.0.0.1:1',
+    stateDir: state,
+  });
+  let reads = 0;
+  const page = fakePage({
+    dom: {
+      'async function inPageFetch': { url: 'https://site.test/big.bin' },
+      'async function readChunk': () => {
+        if (reads++) throw new Error('network error');
+        return { data: Buffer.from('partial').toString('base64') };
+      },
+      delete: true,
+    },
+  });
+  await assert.rejects(
+    run(c, page, {
+      action: 'download',
+      tabId: 't',
+      url: 'https://site.test/big.bin',
+    }),
+    /network error/,
+  );
+  const { readdir } = await import('node:fs/promises');
+  const [folder] = await readdir(join(state, 'downloads'));
+  assert.deepEqual(await readdir(join(state, 'downloads', folder)), []);
+  c.dispose();
+});
+test('clicks in out-of-process frames go to that frame session', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const page = fakePage({ dom: { '"point"': { x: 10, y: 20 } } });
+  page.context.sessions = new Map([['child', { targetId: 'child-root' }]]);
+  page.context.offset = async (frame) =>
+    frame.oopif ? { x: 50, y: 60 } : { x: 100, y: 200 };
+  await run(c, page, { action: 'click', tabId: 't', ref: 'f1:r1.1' });
+  const presses = page.calls.filter(
+    (x) => x.method === 'Input.dispatchMouseEvent',
+  );
+  assert.ok(presses.length);
+  for (const press of presses) {
+    assert.equal(press.sessionId, 'child');
+    assert.deepEqual([press.params.x, press.params.y], [60, 160]);
+    assert.equal(press.params.session, undefined);
+  }
+  c.dispose();
+});
+test('insert and contenteditable fill type through the guest webview', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const scripts = [];
+  const guest = { evaluate: async (expression) => scripts.push(expression) };
+  for (const [mode, dom] of [
+    ['insert', { '"focus"': { focused: true } }],
+    ['fill', { '"type"': { insert: true } }],
+  ]) {
+    const page = fakePage({ dom });
+    const result = await c.pageAction(
+      page,
+      { action: 'type', tabId: 't', ref: 'r1.1', mode, text: 'héllo "x"' },
+      { main: guest, session: 'chat' },
+    );
+    assert.deepEqual(result, { updated: true });
+  }
+  assert.equal(scripts.length, 2);
+  for (const script of scripts)
+    assert.ok(script.includes('view.insertText("héllo \\"x\\"")'));
+  c.dispose();
+});
+test('clicks report the navigation they start once it has loaded', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const page = fakePage({ dom: { '"point"': { x: 1, y: 2 } } });
+  let disposed = false;
+  page.context.watchNavigation = () => ({
+    settle: async (timeoutMs) => {
+      assert.equal(timeoutMs, 3000);
+      return { url: 'https://x.test/next', loaded: true };
+    },
+    dispose: () => (disposed = true),
+  });
+  const result = await run(c, page, {
+    action: 'click',
+    tabId: 't',
+    ref: 'r1.1',
+    timeoutMs: 3000,
+  });
+  assert.deepEqual(result, {
+    click: true,
+    navigation: { url: 'https://x.test/next', loaded: true },
+  });
+  assert.ok(disposed);
+  page.context.watchNavigation = () => ({
+    settle: async () => null,
+    dispose() {},
+  });
+  assert.deepEqual(
+    await run(c, page, { action: 'click', tabId: 't', ref: 'r1.1' }),
+    { click: true },
+  );
+  c.dispose();
+});
+test('find continues into cross-origin frames with frame-qualified refs', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const page = fakePage({
+    dom: {
+      '"find"': (frame) =>
+        frame
+          ? {
+              url: frame.url,
+              found: [{ ref: 'r2.1', kind: 'button', label: 'Pay' }],
+            }
+          : { url: 'https://shop.test/', found: [], inaccessible: true },
+    },
+  });
+  page.context.sessions = new Map();
+  page.context.isolatedFrames = async () => [
+    { frameId: 'pay', url: 'https://pay.test/' },
+  ];
+  page.context.register = () => 'f1';
+  assert.deepEqual(
+    await run(c, page, { action: 'find', tabId: 't', query: 'pay' }),
+    {
+      url: 'https://shop.test/',
+      found: [{ ref: 'f1:r2.1', kind: 'button', label: 'Pay' }],
+    },
+  );
+  c.dispose();
 });

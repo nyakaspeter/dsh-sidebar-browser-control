@@ -7,11 +7,11 @@
 - `src/logs.js`: bounded per-tab console and request recording.
 - `src/index.js`: tool registration, input schema, settings, update notices and output integration.
 - `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, update badge, page registry and agent API, layout, tab title/toolbar.
-- `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching and action dispatch (read, upload, download, screenshot, network idle).
-- `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets and frame-qualified refs.
+- `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching, guest input routing and action dispatch (read, upload, screenshot).
+- `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets, frame-qualified refs, network idle and waiting for navigations started by click, press or navigate (250 ms grace to start, then until the top document stops loading).
 - `src/cdp.js`, `src/endpoint.js`: loopback transport with child sessions and event subscriptions; `DevToolsActivePort` discovery and verification.
-- `src/page-dom.js`, `src/interactions.js`, `src/read.js`: in-page DOM snapshots and actions, input dispatch, cross-frame read pagination.
-- `src/transfer.js`: download naming and streaming to disk, upload path confinement.
+- `src/page-dom.js`, `src/interactions.js`, `src/read.js`: in-page DOM snapshots and actions, input dispatch (keys, clicks, drag, text insertion), cross-frame read pagination.
+- `src/transfer.js`: page-side streamed downloads (hidden `.part` files renamed when complete, stale ones swept), download naming, upload path confinement.
 - `src/screenshot.js`, `src/image-output.js`: bounded capture and DSH image attachments.
 - `src/autostart.js`, `src/desktop.js`, `src/restart.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup; `restart.js` holds the testable restart flow.
 - `src/compatibility.js`, `src/help.js`: build checks and sectioned agent guidance.
@@ -28,9 +28,9 @@ A plugin-owned webview keeps a stable DOM parent. Revealing it positions its exi
 
 Native tabs remain owned by DSH. Do not release their leases on plugin unload. Native opening expands the sidebar and may not initialize a guest in an off-screen chat, so background creation uses plugin-owned pages.
 
-Route keyboard input and reload/back/forward through the guest webview methods. Direct CDP key dispatch and history/reload commands affected the main DSH window during integration testing. Do not use native `capturePage`: it caused an Electron crash. Keep screenshot failures bounded and require explicit user-requested retries.
+Route keyboard input, text insertion (`webview.insertText`) and reload/back/forward through the guest webview methods. Direct CDP key dispatch and history/reload commands affected the main DSH window during integration testing. Do not use native `capturePage`: it caused an Electron crash. Keep screenshot failures bounded and require explicit user-requested retries.
 
-Plugin DOM code runs in a CDP isolated world (`Page.createIsolatedWorld`), never in the page's main world; only the user-facing `evaluate` action uses the main world. Out-of-process frames only receive mouse input sent to their own session, in coordinates relative to that session's root frame. Chromium produces no frames for `opacity: 0` layers, so screenshots of parked pages briefly raise the container to `0.01` opacity.
+Plugin DOM code runs in a CDP isolated world (`Page.createIsolatedWorld`), never in the page's main world; only the user-facing `evaluate` action and the one-time random marker that identifies a guest's debugging target use the main world. Out-of-process frames only receive mouse input sent to their own session, in coordinates relative to that session's root frame. Chromium produces no frames for `opacity: 0` layers, so screenshots of parked pages briefly raise the container to `0.01` opacity.
 
 Network-idle tracking counts the main document and main-frame-session requests only: an out-of-process iframe's document request starts in the parent session but finishes in the iframe's own session, sometimes before tracking reaches it. Child sessions are registered on the CDP connection itself so modules that start late still adopt them.
 

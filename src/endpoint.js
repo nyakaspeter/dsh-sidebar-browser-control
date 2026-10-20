@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { endpoint } from './cdp.js';
 import { userDataDirectory } from './desktop.js';
 
-export const DEVTOOLS_FILE = 'DevToolsActivePort';
+const DEVTOOLS_FILE = 'DevToolsActivePort';
 
 // DSH is launched with --remote-debugging-port=0, so the port is random and
 // recorded with the browser socket path. A stale file (crash, old launch) or a

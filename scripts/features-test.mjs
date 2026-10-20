@@ -166,12 +166,18 @@ try {
   assert.match(download.path, /fixture\.txt$/);
   await assert.rejects(
     run({ action: 'download', url: `http://localhost:${framePort}/x` }),
-    /cannot be downloaded/,
+    /can only fetch files its site allows/,
   );
   const big = await run({ action: 'download', url: `${base}/big.bin` });
   created.push(big.path);
   assert.equal(big.bytes, 12 * 1024 * 1024, 'multi-chunk download streamed');
   assert.equal((await stat(big.path)).size, big.bytes);
+  const { readdir } = await import('node:fs/promises');
+  const { dirname } = await import('node:path');
+  assert.ok(
+    !(await readdir(dirname(big.path))).some((n) => n.endsWith('.part')),
+    'no partial files remain',
+  );
 
   const upload = await run({
     action: 'upload',

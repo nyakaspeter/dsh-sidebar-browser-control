@@ -10,8 +10,8 @@ const server = http.createServer((req, res) => {
   }
   res.end(`<!doctype html><title>Browser controls fixture</title><style>#box{height:100px;overflow:auto}#drag{width:80px;height:30px;background:blue}#drop{width:80px;height:30px;background:red}body{height:2200px}</style>
  <label>Name<input id="name"></label><input type="checkbox" id="check"><select id="choice"><option value="a">Alpha</option><option value="b">Beta</option></select>
- <button id="button">Click me</button><div id="drag">Drag</div><div id="drop">Drop</div><div id="box"><div style="height:1000px">Scrollable</div></div><div id="shadow"></div><iframe src="/frame"></iframe>
- <script>window.count=0;button.onclick=()=>window.count++;window.moves=0;drop.onmouseup=()=>window.moves++;window.keys=[];document.addEventListener('keydown',e=>window.keys.push(e.key));document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<button id="shadowButton">Shadow button</button>';setTimeout(()=>{const p=document.createElement('p');p.textContent='Loaded later';document.body.append(p)},300);</script>`);
+ <input id="auto" aria-label="Auto"><div id="editor" contenteditable="true">old text</div><button id="button">Click me</button><a id="link" href="/next">Next page</a><div id="drag">Drag</div><div id="drop">Drop</div><div id="box"><div style="height:1000px">Scrollable</div></div><div id="shadow"></div><iframe src="/frame"></iframe>
+ <script>window.count=0;button.onclick=()=>window.count++;window.moves=0;drop.onmouseup=()=>window.moves++;window.keys=[];window.inputTypes=[];document.addEventListener('input',e=>window.inputTypes.push(e.target.id+':'+e.inputType));document.addEventListener('keydown',e=>window.keys.push(e.key));document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<button id="shadowButton">Shadow button</button>';setTimeout(()=>{const p=document.createElement('p');p.textContent='Loaded later';document.body.append(p)},300);</script>`);
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`,
@@ -59,16 +59,29 @@ try {
   await run({ action: 'press', target: '#name', text: 'ArrowRight' });
   await run({ action: 'press', target: '#name', text: 'End' });
   await run({ action: 'press', target: '#name', text: 'x' });
+  await run({ action: 'press', target: '#name', text: '!' });
+  await run({ action: 'press', target: '#name', text: 'Shift+1' });
+  await run({
+    action: 'type',
+    target: '#auto',
+    mode: 'insert',
+    text: 'a@b.c',
+  });
+  await run({ action: 'type', target: '#editor', text: 'new text' });
   await run({ action: 'click', target: '#button', mode: 'double' });
   await run({ action: 'hover', target: '#button' });
   await run({ action: 'drag', target: '#drag', text: '#drop' });
   assert.ok((await run({ action: 'scroll', target: '#box' })).y > 0);
   const state = await run({
     action: 'evaluate',
-    text: '({name:document.querySelector("#name").value,checked:document.querySelector("#check").checked,choice:document.querySelector("#choice").value,count:window.count,keys:window.keys,moves:window.moves})',
+    text: '({name:document.querySelector("#name").value,checked:document.querySelector("#check").checked,choice:document.querySelector("#choice").value,count:window.count,keys:window.keys,moves:window.moves,auto:document.querySelector("#auto").value,editor:document.querySelector("#editor").textContent,inputTypes:window.inputTypes})',
   });
   console.log('Input verification:', JSON.stringify(state));
-  assert.equal(state.name, 'Alicex');
+  assert.equal(state.name, 'Alicex!!');
+  assert.equal(state.auto, 'a@b.c');
+  assert.equal(state.editor, 'new text');
+  assert.ok(state.inputTypes.includes('auto:insertText'), state.inputTypes);
+  assert.ok(state.inputTypes.includes('editor:insertText'), state.inputTypes);
   assert.equal(state.checked, true);
   assert.equal(state.choice, 'b');
   assert.equal(state.count, 2);
@@ -80,8 +93,19 @@ try {
   await run({ action: 'focus' });
   await run({ action: 'hide' });
   assert.equal(await run({ action: 'evaluate', text: 'window.count' }), 2);
-  await run({ action: 'navigate', url: base + '/next' });
-  await run({ action: 'wait', mode: 'url', text: '/next' });
+  const clicked = await run({ action: 'click', target: '#link' });
+  assert.equal(
+    clicked.navigation?.url,
+    base + '/next',
+    JSON.stringify(clicked),
+  );
+  assert.equal(clicked.navigation.loaded, true);
+  await run({ action: 'navigate', mode: 'back' });
+  await run({ action: 'wait', mode: 'ready' });
+  const plain = await run({ action: 'click', target: '#button' });
+  assert.equal(plain.navigation, undefined, JSON.stringify(plain));
+  const navigated = await run({ action: 'navigate', url: base + '/next' });
+  assert.equal(navigated.navigation?.loaded, true, JSON.stringify(navigated));
   await run({ action: 'navigate', mode: 'back' });
   await run({ action: 'wait', mode: 'ready' });
   await run({ action: 'navigate', mode: 'forward' });
@@ -140,7 +164,7 @@ try {
     'PASS: JavaScript dialog reporting; host auto-dismiss and unsupported prompt limits detected without hangs.',
   );
   console.log(
-    'PASS: real DSH background DOM refs, shadow/frame reads, forms, keyboard, mouse, drag, targeted scrolling, hide/reveal, history and bounded wait.',
+    'PASS: real DSH background DOM refs, shadow/frame reads, forms, text insertion, keyboard, mouse, drag, targeted scrolling, hide/reveal, history, navigation after click and bounded wait.',
   );
 } finally {
   if (tab)

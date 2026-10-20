@@ -1,5 +1,5 @@
 // Serialized into the page. References expire on a new read or navigation.
-export function pageDOM(action, args) {
+function pageDOM(action, args) {
   const slot = '__dshBrowserElements';
   const roots = [],
     frames = [];
@@ -129,12 +129,15 @@ export function pageDOM(action, args) {
         epoch: (prev?.epoch ?? 0) + 1,
         next: 1,
         refs: new Map(),
+        ids: new Map(),
       };
     const state = globalThis[slot];
     return (e) => {
-      for (const [ref, el] of state.refs) if (el === e) return ref;
-      const ref = `r${state.epoch}.${state.next++}`;
+      let ref = state.ids.get(e);
+      if (ref) return ref;
+      ref = `r${state.epoch}.${state.next++}`;
       state.refs.set(ref, e);
+      state.ids.set(e, ref);
       return ref;
     };
   }
@@ -262,17 +265,17 @@ export function pageDOM(action, args) {
           });
         }
       }
-    return {
-      url: location.href,
-      found,
-      ...(frames.length ? { inaccessibleFrames: frames.length } : {}),
-    };
+    return { url: location.href, found, inaccessible: frames.length > 0 };
   }
   if (action === 'wait') {
     if (args.condition === 'url')
       return location.href.includes(args.text ?? '');
     if (args.condition === 'text')
-      return (document.body?.innerText ?? '').includes(args.text ?? '');
+      return roots.some(({ root }) =>
+        (root.body?.innerText ?? root.textContent ?? '').includes(
+          args.text ?? '',
+        ),
+      );
     if (args.condition === 'ready') return document.readyState === 'complete';
     try {
       const e = target();
@@ -291,10 +294,10 @@ export function pageDOM(action, args) {
         e.scrollIntoView({ block: 'center', inline: 'nearest' });
         return { scrolledIntoView: true };
       }
-      e.scrollBy(args.deltaX ?? 0, args.deltaY ?? 600);
+      e.scrollBy(args.deltaX, args.deltaY);
       return { x: e.scrollLeft, y: e.scrollTop };
     }
-    window.scrollBy(args.deltaX ?? 0, args.deltaY ?? 600);
+    window.scrollBy(args.deltaX, args.deltaY);
     return { x: scrollX, y: scrollY };
   }
   const e = target(),
@@ -375,8 +378,17 @@ export function pageDOM(action, args) {
             ? win.HTMLInputElement.prototype
             : win.HTMLTextAreaElement.prototype;
         Object.getOwnPropertyDescriptor(proto, 'value').set.call(e, args.text);
-      } else if (e.isContentEditable) e.textContent = args.text;
-      else throw Error('Target is not an editable field.');
+      } else if (e.isContentEditable) {
+        // Rich editors keep their own model: select the content and let the
+        // host insert the text as real input instead of rewriting the DOM.
+        e.focus();
+        const selection = e.ownerDocument.getSelection();
+        selection.removeAllRanges();
+        const range = e.ownerDocument.createRange();
+        range.selectNodeContents(e);
+        selection.addRange(range);
+        return { insert: true };
+      } else throw Error('Target is not an editable field.');
     } else throw Error('Unknown type mode.');
     e.dispatchEvent(new win.Event('input', { bubbles: true }));
     e.dispatchEvent(new win.Event('change', { bubbles: true }));

@@ -23,16 +23,16 @@ export function combineRead(parts, args, inaccessibleFrames = []) {
   const { textOffset, elementOffset, maxText, maxElements } = readLimits(args);
   const [main, ...frames] = parts;
   let text = main.text,
-    textLength = main.textLength ?? main.text.length;
+    textLength = main.textLength;
   for (const frame of frames) {
     // Main-content reads skip frame text; frame controls are still listed.
     if (!frame.text || main.scope === 'main') continue;
     const header = `\n\n[Frame ${frame.url}]\n`;
     text += header + frame.text;
-    textLength += header.length + (frame.textLength ?? frame.text.length);
+    textLength += header.length + frame.textLength;
   }
   const elements = parts.flatMap((p) => p.elements);
-  const total = parts.reduce((n, p) => n + (p.total ?? p.elements.length), 0);
+  const total = parts.reduce((n, p) => n + p.total, 0);
   const moreText = textLength > textOffset + maxText,
     moreElements = total > elementOffset + maxElements;
   return {

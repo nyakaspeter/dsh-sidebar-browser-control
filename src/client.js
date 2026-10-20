@@ -5,8 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.9.0',
-      PROTOCOL = 2,
+    const BUILD = '0.10.0',
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';
     const h = React.createElement;
@@ -276,7 +275,7 @@ window.__ModuleLoader__.load({
       }
       // The webview never changes DOM parents: Electron can destroy a guest on
       // reparenting. Transparent parked pages keep a composited viewport.
-      async function openOwned(session, url, background, options) {
+      async function openOwned(session, url, background, deferLoad) {
         const tab = background
           ? { id: `background-${++backgroundSequence}` }
           : openPresentation(session, url);
@@ -329,7 +328,6 @@ window.__ModuleLoader__.load({
             lease: reservation.lease,
             container,
             view,
-            options,
           };
           owned.set(key, page);
           container.append(view);
@@ -343,15 +341,14 @@ window.__ModuleLoader__.load({
                   session,
                   request.url ?? request,
                   !page.sidebarTabId,
-                  // Nothing waits to attach to a popup; it loads immediately.
-                  { ...options, deferLoad: false },
+                  // Nothing waits to attach to a popup: no deferLoad.
                 )
                 .catch(console.error);
             },
           );
           requestLayout(true);
           // The host attaches logging before the first load, then calls load.
-          if (options.deferLoad) {
+          if (deferLoad) {
             page.pendingURL = url;
             return { tabId: tab.id, background, pendingLoad: true };
           }
@@ -378,11 +375,8 @@ window.__ModuleLoader__.load({
         sidebar.active()?.id === id &&
         sidebar.isExpanded();
       const api = {
-        version: PROTOCOL,
-        build: BUILD,
         status() {
           return {
-            version: PROTOCOL,
             build: BUILD,
             visibleSession: sidebar.mounted.getSnapshot() ?? null,
             tabs: owned.size,
@@ -394,7 +388,7 @@ window.__ModuleLoader__.load({
           const url = validURL(value);
           if (!background && sidebar.mounted.getSnapshot() === session)
             return openNative(session, url);
-          return openOwned(session, url, background, options);
+          return openOwned(session, url, background, options.deferLoad);
         },
         list(session) {
           check(session);
@@ -524,9 +518,6 @@ window.__ModuleLoader__.load({
             return { native: false, visible: true, raised: false };
           page.container.style.opacity = active ? '0.01' : '0';
           return { native: false, visible: false, raised: true };
-        },
-        visible(session) {
-          return sidebar.mounted.getSnapshot() === session;
         },
       };
       return {
@@ -806,7 +797,6 @@ window.__ModuleLoader__.load({
           ctx.effect(() => {
             const api = {
               status: () => ({
-                version: PROTOCOL,
                 build: BUILD,
                 compatibilityError: missing.join(', '),
               }),
@@ -884,18 +874,26 @@ window.__ModuleLoader__.load({
             ],
           });
           const onEvent = () => layout.request();
-          for (const event of ['resize', 'pointermove', 'scroll'])
+          // Pointer moves only matter while dragging (resizing the sidebar);
+          // plain hovering would force a layout read every frame.
+          const onPointer = (e) => e.buttons && layout.request();
+          for (const event of ['resize', 'scroll'])
             window.addEventListener(event, onEvent, {
               passive: true,
               capture: true,
             });
+          window.addEventListener('pointermove', onPointer, {
+            passive: true,
+            capture: true,
+          });
           document.addEventListener('transitionrun', layout.animate, true);
           return async () => {
             layout.stop();
             observer.disconnect();
             disposers.forEach((fn) => fn());
-            for (const event of ['resize', 'pointermove', 'scroll'])
+            for (const event of ['resize', 'scroll'])
               window.removeEventListener(event, onEvent, true);
+            window.removeEventListener('pointermove', onPointer, true);
             document.removeEventListener('transitionrun', layout.animate, true);
             if (window.__dshSidebarControl === pages.api)
               delete window.__dshSidebarControl;

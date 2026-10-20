@@ -1,7 +1,8 @@
 // The public tool schema is deliberately small (it is sent with every model
 // request). This module maps it onto the internal arguments used by the
-// controller, interactions and page DOM code.
-export const ACTIONS = [
+// controller, interactions and page DOM code, which trust it to be valid.
+import { MODIFIERS } from './interactions.js';
+const ACTIONS = [
   'help',
   'status',
   'open',
@@ -26,7 +27,7 @@ export const ACTIONS = [
   'download',
   'logs',
 ];
-export const TAB_FREE = ['help', 'status', 'open', 'list'];
+const TAB_FREE = ['help', 'status', 'open', 'list'];
 
 export const PARAMETERS = {
   action: { type: 'string', required: true, enum: ACTIONS },
@@ -53,7 +54,7 @@ export const PARAMETERS = {
     description: 'open: false to show the tab to the user',
   },
   files: { type: 'array', items: { type: 'string' }, description: 'upload' },
-  timeoutMs: { type: 'integer', description: 'wait: max 10000' },
+  timeoutMs: { type: 'integer', description: 'wait/navigation: max 10000' },
   retry: {
     type: 'boolean',
     description: 'screenshot: only if the user asked to retry',
@@ -65,7 +66,7 @@ const POINT = /^\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*$/;
 const MODES = {
   navigate: ['back', 'forward', 'reload'],
   click: ['left', 'right', 'middle', 'double'],
-  type: ['fill', 'select', 'check', 'uncheck'],
+  type: ['fill', 'insert', 'select', 'check', 'uncheck'],
   wait: ['visible', 'hidden', 'text', 'url', 'ready', 'networkidle'],
   scroll: ['down', 'up', 'left', 'right', 'into'],
   dialog: ['inspect', 'accept', 'dismiss'],
@@ -153,8 +154,13 @@ export function normalize(input) {
       if (!text)
         throw new Error('press requires text, e.g. Enter or Control+a');
       const parts = text.split('+');
-      args.key = parts.pop() || '+';
-      if (parts.length) args.modifiers = parts.join('+');
+      args.key = parts.pop() || '+'; // "Control++" presses +
+      const modifiers = parts.filter(Boolean);
+      if (modifiers.some((m) => !MODIFIERS[m]))
+        throw new Error(
+          'press modifiers must be Alt, Control, Meta or Shift, e.g. Control+a.',
+        );
+      if (modifiers.length) args.modifiers = modifiers;
       break;
     }
     case 'scroll':
@@ -174,6 +180,8 @@ export function normalize(input) {
       break;
     case 'wait':
       args.condition = mode ?? (target ? 'visible' : 'ready');
+      if (['text', 'url'].includes(args.condition) && !text)
+        throw new Error(`wait ${args.condition} requires text`);
       if (text !== undefined) args.text = text;
       break;
     case 'dialog':

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { BUILD, compatibility } from './compatibility.js';
 import { CDP, targets, website } from './cdp.js';
 import { stateDirectory } from './desktop.js';
@@ -12,8 +11,7 @@ import { domExpression } from './page-dom.js';
 import { combineRead, prefixRefs, readLimits } from './read.js';
 import { ScreenshotGuard } from './screenshot.js';
 import {
-  MAX_DOWNLOAD_BYTES,
-  createDownload,
+  downloadThroughPage,
   downloadsDirectory,
   fileName,
   resolveUploads,
@@ -24,8 +22,11 @@ const APP_URL = 'dsh-app://app/';
 const TARGET_TTL = 1000,
   CLIENT_TTL = 3000,
   MAX_FRAMES = 20,
-  CHUNK = 4 * 1024 * 1024;
+  FIND_LIMIT = 8;
 const J = JSON.stringify;
+// Runs statements with `view` bound to the guest webview that holds this lease.
+const inView = (lease, body) =>
+  `(()=>{const view=[...document.querySelectorAll('webview')].find(v=>v.getAttribute('name')===${J(lease)});if(!view)throw new Error('Browser view disappeared; read the page again.');${body}})()`;
 
 export class SidebarController {
   constructor({ endpoint, stateDir = stateDirectory() } = {}) {
@@ -249,13 +250,25 @@ export class SidebarController {
     }
     page.context ??= new PageContext(page);
     await page.context.init(signal);
-    return this.pageAction(page, main, args, session, signal, context, invoke);
+    return this.pageAction(page, args, {
+      main,
+      session,
+      signal,
+      context,
+      invoke,
+    });
   }
   // A one-time random global identifies the guest's debugging target.
+  // The marker lives briefly in the page's main world (webview.executeJavaScript
+  // has no isolated variant); its name is random and it is deleted on match.
+  // Connections opened only to probe are closed again.
   async locate(app, main, lease, signal) {
     const key = `__dshProbe_${randomUUID().replaceAll('-', '')}`;
     await main.evaluate(
-      `(()=>{const view=[...document.querySelectorAll('webview')].find(v=>v.getAttribute('name')===${J(lease)});if(!view)throw new Error('Sidebar view disappeared');return view.executeJavaScript(${J(`globalThis[${J(key)}]=true`)})})()`,
+      inView(
+        lease,
+        `return view.executeJavaScript(${J(`globalThis[${J(key)}]=true`)})`,
+      ),
       signal,
     );
     for (const force of [false, true]) {
@@ -263,21 +276,27 @@ export class SidebarController {
       for (const target of list.filter(
         (t) => t.type === 'webview' && t.parentId === app.id,
       )) {
+        const held = this.connections.has(target.id);
         const candidate = await this.connection(target);
         if (candidate.lease && candidate.lease !== lease) continue;
         const bound = AbortSignal.timeout(750),
           probe = signal ? AbortSignal.any([signal, bound]) : bound;
+        let found = false;
         try {
-          if (await candidate.evaluate(`globalThis[${J(key)}]===true`, probe)) {
+          found = await candidate.evaluate(
+            `globalThis[${J(key)}]===true`,
+            probe,
+          );
+          if (found)
             await candidate
               .evaluate(`delete globalThis[${J(key)}]`, probe)
               .catch(() => {});
-            return candidate;
-          }
         } catch (error) {
           signal?.throwIfAborted();
           if (!bound.aborted && !error.dialog) throw error;
         }
+        if (found) return candidate;
+        if (!held) this.release(candidate);
       }
     }
     throw new Error(
@@ -290,9 +309,9 @@ export class SidebarController {
       return {
         dialog: null,
         message:
-          'No tracked dialog. Read the page once before triggering JavaScript dialogs.',
+          'No tracked dialog. Dialogs are tracked from open for plugin tabs, and from the first action for tabs the user opened.',
       };
-    if (!args.mode || args.mode === 'inspect')
+    if (args.mode === 'inspect')
       return {
         dialog: held.dialog,
         lastDialog: held.lastDialog,
@@ -303,8 +322,6 @@ export class SidebarController {
             }
           : {}),
       };
-    if (!['accept', 'dismiss'].includes(args.mode))
-      throw new Error('dialog mode must be inspect/accept/dismiss');
     if (!held.dialog) return { handled: false, reason: 'No dialog is open.' };
     await held.call(
       'Page.handleJavaScriptDialog',
@@ -318,9 +335,8 @@ export class SidebarController {
     held.dialog = null;
     return { handled: true };
   }
-  async pageAction(page, main, args, session, signal, context, invoke) {
+  async pageAction(page, args, { main, session, signal, context, invoke }) {
     const frames = page.context;
-    const call = (method, params, s = signal) => page.call(method, params, s);
     // DOM helpers run in isolated worlds; frame-qualified refs route to their frame.
     const dom = async (action, a = args, s = signal) => {
       const { frame, ref } = frames.route(a.ref);
@@ -350,136 +366,91 @@ export class SidebarController {
       }
       return value;
     };
-    const adapter = {
-      call: (method, params, s) => {
-        if (params?.session === undefined) return page.call(method, params, s);
-        const { session: sessionId, ...rest } = params;
-        return page.call(method, rest, s, sessionId);
-      },
+    // Key events and text insertion go through the guest webview: direct CDP
+    // key dispatch reached the main DSH window.
+    const input = {
+      call: (method, params, s, sessionId) =>
+        method === 'Input.dispatchKeyEvent'
+          ? this.guestKey(main, page.lease, params, s)
+          : page.call(method, params, s, sessionId),
+      on: (method, fn) => page.on(method, fn),
       dom,
+      insertText: (text, s) =>
+        main.evaluate(
+          inView(page.lease, `return view.insertText(${J(text)})`),
+          s,
+        ),
     };
-    if (args.action === 'press')
-      return interact(
-        {
-          ...adapter,
-          call: (method, params, s) =>
-            method === 'Input.dispatchKeyEvent'
-              ? this.guestKey(main, page.lease, params, s)
-              : page.call(method, params, s),
-        },
-        args,
-        signal,
-      );
-    if (args.action === 'read') return this.read(page, args, signal);
-    if (args.action === 'find')
-      return frames.evaluate(undefined, domExpression('find', args), signal);
-    if (args.action === 'logs') return frames.logs.query(args, signal);
-    if (args.action === 'drag') return this.drag(page, args, dom, signal);
-    if (args.action === 'wait' && args.condition === 'networkidle')
-      return this.networkIdle(page, args, signal);
-    if (['click', 'type', 'scroll', 'hover', 'wait'].includes(args.action))
-      return interact(adapter, args, signal);
     switch (args.action) {
-      case 'navigate': {
-        const mode = args.mode ?? 'url';
-        if (mode !== 'url')
-          throw new Error('navigate mode must be url/back/forward/reload');
-        const r = await call('Page.navigate', { url: website(args.url) });
-        if (r.errorText) throw new Error(r.errorText);
-        return r;
-      }
+      case 'read':
+        return this.read(page, args, signal);
+      case 'find':
+        return this.find(frames, args, signal);
+      case 'logs':
+        return frames.logs.query(args, signal);
+      case 'wait':
+        if (args.condition === 'networkidle')
+          return frames.networkIdle(args.timeoutMs, signal);
+        return interact(input, args, signal);
+      // A click or key can start a navigation: report where it went once
+      // it has loaded, so the agent never acts on the old page.
+      case 'click':
+      case 'press':
+        return this.navigating(frames, args, signal, () =>
+          interact(input, args, signal),
+        );
+      case 'type':
+      case 'scroll':
+      case 'hover':
+      case 'drag':
+        return interact(input, args, signal);
+      // back/forward/reload go through the guest webview in execute().
+      case 'navigate':
+        return this.navigating(frames, args, signal, async () => {
+          const r = await page.call(
+            'Page.navigate',
+            { url: website(args.url) },
+            signal,
+          );
+          if (r.errorText) throw new Error(r.errorText);
+          return { navigated: true };
+        });
       case 'evaluate':
-        if (!args.expression) throw new Error('expression is required');
         return page.evaluate(args.expression, signal);
       case 'screenshot':
         return this.screenshot(page, main, args, session, signal, dom, invoke);
       case 'upload':
         return this.upload(page, args, session, signal, context);
-      case 'download':
-        return this.download(page, args, session, signal, dom);
+      case 'download': {
+        const { frame } = frames.route(args.ref);
+        const link = args.url ? null : await dom('href');
+        return downloadThroughPage({
+          evaluate: (expression, s) => frames.evaluate(frame, expression, s),
+          source: website(args.url ?? link.url),
+          directory: downloadsDirectory(session, this.stateDir),
+          // Like a browser: header name, then the link's download attribute.
+          name: (meta) =>
+            args.text
+              ? sanitizeName(args.text)
+              : fileName({ ...meta, suggested: link?.download }),
+          signal,
+        });
+      }
       default:
         throw new Error(`Unknown action: ${args.action}`);
     }
   }
-  // Native HTML5 drag-and-drop needs drag events; mouse-driven drags (sliders,
-  // maps, JS libraries) only need mouse moves. Interception tells them apart.
-  async drag(page, args, dom, signal) {
-    const point = async (a) => {
-      if (a.ref || a.selector) return dom('point', a);
-      if (!Number.isFinite(a.x) || !Number.isFinite(a.y))
-        throw Error('drag needs a target and a drop target.');
-      return { x: a.x, y: a.y };
-    };
-    const from = await point(args);
-    const to = await point({
-      ref: args.toRef,
-      selector: args.toSelector,
-      x: args.toX,
-      y: args.toY,
-      scroll: false,
-    });
-    if (from.session !== to.session)
-      throw Error(
-        'Drag between different cross-origin frames is not supported.',
-      );
-    const session = from.session;
-    const call = (method, params, s = signal) =>
-      page.call(method, params, s, session);
-    const at = ({ x, y }) => ({ x, y });
-    let data = null,
-      pressed = false;
-    const off = page.on('Input.dragIntercepted', (event, sid) => {
-      if (sid === session) data = event.data;
-    });
+  async navigating(frames, args, signal, action) {
+    const watch = frames.watchNavigation();
     try {
-      await call('Input.setInterceptDrags', { enabled: true }).catch(() => {});
-      await call('Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        ...at(from),
-      });
-      await call('Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        button: 'left',
-        clickCount: 1,
-        ...at(from),
-      });
-      pressed = true;
-      for (let i = 1; i <= 10; i++)
-        await call('Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          button: 'left',
-          buttons: 1,
-          x: from.x + ((to.x - from.x) * i) / 10,
-          y: from.y + ((to.y - from.y) * i) / 10,
-        });
-      await delay(50, undefined, { signal });
-      if (data)
-        for (const type of ['dragEnter', 'dragOver', 'drop'])
-          await call('Input.dispatchDragEvent', { type, ...at(to), data });
-      await call('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        button: 'left',
-        clickCount: 1,
-        ...at(to),
-      });
-      pressed = false;
-      return { dragged: true, ...(data && { html5: true }) };
+      const result = await action();
+      const navigation = await watch.settle(args.timeoutMs, signal);
+      return navigation ? { ...result, navigation } : result;
     } finally {
-      off();
-      if (pressed)
-        await call(
-          'Input.dispatchMouseEvent',
-          { type: 'mouseReleased', button: 'left', clickCount: 1, ...at(to) },
-          AbortSignal.timeout(1000),
-        ).catch(() => {});
-      await call(
-        'Input.setInterceptDrags',
-        { enabled: false },
-        AbortSignal.timeout(1000),
-      ).catch(() => {});
+      watch.dispose();
     }
   }
-  // Direct CDP key events reached the main DSH window; route through the guest.
+  // Translates a CDP key event into the guest's own input events.
   guestKey(main, lease, params, signal) {
     const modifiers = [];
     for (const [name, flag] of [
@@ -499,6 +470,7 @@ export class SidebarController {
           ArrowDown: 'Down',
           ' ': 'Space',
           Enter: 'Return',
+          '+': 'Plus',
         }[params.key] ?? params.key,
       modifiers,
     };
@@ -507,7 +479,7 @@ export class SidebarController {
         ? `view.sendInputEvent(${J({ type: 'char', keyCode: params.text, modifiers })});`
         : '';
     return main.evaluate(
-      `(()=>{const view=[...document.querySelectorAll('webview')].find(v=>v.getAttribute('name')===${J(lease)});if(!view)throw new Error('Browser view disappeared');view.sendInputEvent(${J(event)});${char}})()`,
+      inView(lease, `view.sendInputEvent(${J(event)});${char}`),
       signal,
     );
   }
@@ -535,19 +507,13 @@ export class SidebarController {
     const parts = [main];
     let inaccessible = main.inaccessibleFrames ?? [];
     if (inaccessible.length || frames.sessions.size) {
-      let list = [];
-      try {
-        list = await frames.isolatedFrames(signal);
-      } catch (error) {
-        signal?.throwIfAborted();
-        if (error.dialog) throw error;
-      }
+      const list = await this.otherFrames(frames, signal);
       const viewport = await frames.evaluate(
         undefined,
         '({width: innerWidth, height: innerHeight})',
         signal,
       );
-      for (const frame of list.slice(0, MAX_FRAMES)) {
+      for (const frame of list) {
         try {
           const frameOffset = await frames.offset(frame, signal);
           const part = await frames.evaluate(
@@ -579,42 +545,47 @@ export class SidebarController {
     }
     return combineRead(parts, args, inaccessible);
   }
-  // Idle: the document finished loading (covers requests from before the
-  // plugin attached) and no tracked request was in flight for 500 ms.
-  async networkIdle(page, args, signal) {
-    const timeoutMs = args.timeoutMs ?? 5000;
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000)
-      throw Error('timeoutMs must be 1–10000.');
-    const frames = page.context,
-      inflight = frames.inflight;
-    const bound = AbortSignal.timeout(timeoutMs),
-      combined = signal ? AbortSignal.any([signal, bound]) : bound;
+  // Cross-origin frames the main document's walk cannot reach, capped.
+  async otherFrames(frames, signal) {
     try {
-      let idleSince = Date.now();
-      while (true) {
-        const loaded =
-          (await frames.evaluate(
-            undefined,
-            'document.readyState',
-            combined,
-          )) === 'complete';
-        if (!loaded || inflight.size) idleSince = Date.now();
-        else if (Date.now() - idleSince >= 500) return { matched: true };
-        await delay(50, undefined, { signal: combined });
-      }
+      return (await frames.isolatedFrames(signal)).slice(0, MAX_FRAMES);
     } catch (error) {
       signal?.throwIfAborted();
-      if (bound.aborted)
-        return {
-          matched: false,
-          code: 'WAIT_TIMEOUT',
-          pendingRequests: inflight.size,
-          pending: [...inflight.values()].slice(0, 5),
-          message:
-            'The network did not go idle within the deadline (long-polling pages may never idle). Read the page before deciding what to do next.',
-        };
-      throw error;
+      if (error.dialog) throw error;
+      return [];
     }
+  }
+  // Searches the main document first, then cross-origin frames until enough
+  // matches are found; frame matches get frame-qualified refs.
+  async find(frames, args, signal) {
+    const main = await frames.evaluate(
+      undefined,
+      domExpression('find', args),
+      signal,
+    );
+    const found = main.found;
+    if (
+      found.length < FIND_LIMIT &&
+      (main.inaccessible || frames.sessions.size)
+    )
+      for (const frame of await this.otherFrames(frames, signal)) {
+        if (found.length >= FIND_LIMIT) break;
+        try {
+          const part = await frames.evaluate(
+            frame,
+            domExpression('find', args),
+            signal,
+          );
+          if (!part.found.length) continue;
+          const key = frames.register(frame);
+          for (const item of part.found)
+            found.push({ ...item, ref: `${key}:${item.ref}` });
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (error.dialog) throw error;
+        }
+      }
+    return { url: main.url, found: found.slice(0, FIND_LIMIT) };
   }
   async screenshot(page, main, args, session, signal, dom, invoke) {
     const element = !!(args.ref || args.selector);
@@ -637,7 +608,7 @@ export class SidebarController {
       };
     }
     let clipped = false;
-    const surface = await invoke?.('captureSurface', args.tabId, true).catch(
+    const surface = await invoke('captureSurface', args.tabId, true).catch(
       () => null,
     );
     if (surface?.native && !surface.visible)
@@ -713,85 +684,10 @@ export class SidebarController {
     }
     return { uploaded: files.length, files: files.map((f) => basename(f)) };
   }
-  // In-page fetch keeps the page's cookies and origin.
-  async download(page, args, session, signal, dom) {
-    const frames = page.context;
-    const { frame } = frames.route(args.ref);
-    const source = website(args.url ?? (await dom('href')).url);
-    const key = `__dshDownload_${randomUUID().replaceAll('-', '')}`;
-    let meta;
-    try {
-      meta = await frames.evaluate(
-        frame,
-        `(${inPageFetch})(${J(source)},${J(key)},${MAX_DOWNLOAD_BYTES})`,
-        signal,
-      );
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (error.dialog) throw error;
-      meta = { error: error.message };
-    }
-    if (meta.tooLarge)
-      throw new Error(
-        `Download exceeds the ${MAX_DOWNLOAD_BYTES / 1048576} MB limit.`,
-      );
-    if (meta.status) throw new Error(`Download failed: HTTP ${meta.status}`);
-    const directory = downloadsDirectory(session, this.stateDir);
-    const nameFor = (info) =>
-      args.text
-        ? sanitizeName(args.text)
-        : fileName({ disposition: info.disposition, url: info.url });
-    let result;
-    if (meta.size !== undefined) {
-      const info = {
-        mediaType: meta.type,
-        disposition: meta.disposition,
-        url: meta.url,
-      };
-      const file = await createDownload(directory, nameFor(info));
-      try {
-        // Each chunk goes straight to disk; memory stays at one chunk.
-        for (let start = 0; start < meta.size; start += CHUNK)
-          await file.write(
-            Buffer.from(
-              await frames.evaluate(
-                frame,
-                `(${readChunk})(${J(key)},${start},${start + CHUNK})`,
-                signal,
-              ),
-              'base64',
-            ),
-          );
-        await file.finish();
-      } catch (error) {
-        await file.abort();
-        throw error;
-      } finally {
-        frames
-          .evaluate(
-            frame,
-            `delete globalThis[${J(key)}]`,
-            AbortSignal.timeout(1000),
-          )
-          .catch(() => {});
-      }
-      result = { ...info, path: file.path, bytes: file.bytes };
-    } else
-      throw new Error(
-        `Download failed: ${meta.error ?? 'the page could not fetch this URL'}. Cross-origin files the site does not allow to be fetched cannot be downloaded; open the file URL in a tab instead.`,
-      );
-    return {
-      path: result.path,
-      bytes: result.bytes,
-      ...(result.mediaType && { mediaType: result.mediaType }),
-      url: result.url,
-    };
-  }
   dispose() {
     this.disposed = true;
     for (const c of [...this.connections.values()]) this.release(c);
     this.queues.clear();
-    this.screenshots.blocked.clear();
   }
 }
 function sameDocument(a, b) {
@@ -804,34 +700,4 @@ function sameDocument(a, b) {
   } catch {
     return a === b;
   }
-}
-// Serialized into the page's isolated world.
-async function inPageFetch(url, key, max) {
-  let response;
-  try {
-    response = await fetch(url, { credentials: 'include' });
-  } catch (error) {
-    return { error: String(error?.message ?? error) };
-  }
-  if (!response.ok) return { status: response.status };
-  if (Number(response.headers.get('content-length')) > max)
-    return { tooLarge: true };
-  const blob = await response.blob();
-  if (blob.size > max) return { tooLarge: true };
-  globalThis[key] = blob;
-  return {
-    size: blob.size,
-    type: blob.type || response.headers.get('content-type') || undefined,
-    disposition: response.headers.get('content-disposition') || undefined,
-    url: response.url,
-  };
-}
-async function readChunk(key, start, end) {
-  const blob = globalThis[key];
-  if (!blob) throw Error('Download buffer expired; download again.');
-  const bytes = new Uint8Array(await blob.slice(start, end).arrayBuffer());
-  let text = '';
-  for (let i = 0; i < bytes.length; i += 32768)
-    text += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
-  return btoa(text);
 }

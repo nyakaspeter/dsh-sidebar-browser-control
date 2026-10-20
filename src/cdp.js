@@ -46,7 +46,12 @@ export class CDP {
     this.dialog = null;
     this.lastDialog = null;
     ws.on('message', (data) => {
-      const message = JSON.parse(data);
+      let message;
+      try {
+        message = JSON.parse(data);
+      } catch {
+        return; // Never let a malformed frame throw inside the host process.
+      }
       if (message.id) {
         const entry = this.pending.get(message.id);
         if (!entry) return;
@@ -58,10 +63,7 @@ export class CDP {
         return;
       }
       if (message.method === 'Target.attachedToTarget')
-        this.children.set(message.params.sessionId, {
-          ...message.params.targetInfo,
-          parent: message.sessionId,
-        });
+        this.children.set(message.params.sessionId, message.params.targetInfo);
       if (message.method === 'Target.detachedFromTarget')
         this.children.delete(message.params.sessionId);
       if (message.method === 'Page.javascriptDialogOpening') {

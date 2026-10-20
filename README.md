@@ -40,7 +40,7 @@ Agents discover the `sidebar_browser` tool automatically. It supports reading pa
 - Agents keep working when you switch chats. Each agent can access only its own chat’s tabs; that chat must remain loaded.
 - Existing native tabs keep DSH’s toolbar. Background tabs use a matching plugin toolbar, including when revealed.
 - Agent tabs use cookie storage private to their chat: tabs in one chat share it, but it is separate from other chats and from DSH’s own browser tabs, and it is cleared when DSH quits. Tabs you open yourself in DSH keep DSH’s storage.
-- Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (up to 500 MB, streamed to disk) are saved to a per-chat folder in the plugin’s state directory: `~/Library/Application Support/dsh-sidebar-browser-control/downloads/` on macOS, `%LOCALAPPDATA%\dsh-sidebar-browser-control\downloads\` on Windows, `~/.local/state/dsh-sidebar-browser-control/downloads/` on Linux. DSH blocks the browser’s own downloads, so the plugin fetches files through the page with its cookies. Agents move them with their normal file tools.
+- Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (any size, streamed to disk; failed or interrupted ones leave no partial file) are saved to a per-chat folder in the plugin’s state directory: `~/Library/Application Support/dsh-sidebar-browser-control/downloads/` on macOS, `%LOCALAPPDATA%\dsh-sidebar-browser-control\downloads\` on Windows, `~/.local/state/dsh-sidebar-browser-control/downloads/` on Linux. DSH blocks the browser’s own downloads, so the plugin fetches files through the page with its cookies. Agents move them with their normal file tools.
 - Reads are plain text: the page's main content (when the page marks it) plus one line per control, paginated. `find` returns just the matching elements. The tool definition is about 480 tokens.
 - Console output and network requests are recorded per tab from the moment it opens; `logs` shows what is new since the last call.
 
@@ -48,19 +48,19 @@ Agents discover the `sidebar_browser` tool automatically. It supports reading pa
 
 One tool, `sidebar_browser`, provides these actions. Page actions generally require a `tabId` from `open` or `list`; `help` describes the full parameters.
 
-| Actions                          | Purpose                                                        |
-| -------------------------------- | -------------------------------------------------------------- |
-| `help`, `status`, `list`         | Instructions, readiness, and this chat’s tabs                  |
-| `open`, `focus`, `hide`, `close` | Open pages and manage visibility or lifetime                   |
-| `navigate`                       | Go to a URL, back, forward, or reload                          |
-| `read`, `find`                   | Read text and controls, or find specific elements              |
-| `click`, `hover`, `drag`         | Interact by ref, selector or coordinates; drag supports HTML5  |
-| `type`, `press`                  | Fill fields, select options, check boxes, send keys and combos |
-| `scroll`, `wait`                 | Scroll or wait for a condition, including network idle         |
-| `dialog`                         | Inspect, accept, or dismiss JavaScript dialogs                 |
-| `upload`, `download`             | Set files on file inputs; save links or URLs with page cookies |
-| `screenshot`                     | Capture the viewport, full page, or one element                |
-| `evaluate`, `logs`               | Run JavaScript; read console output and requests               |
+| Actions                          | Purpose                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `help`, `status`, `list`         | Instructions, readiness, and this chat’s tabs                                                         |
+| `open`, `focus`, `hide`, `close` | Open pages and manage visibility or lifetime                                                          |
+| `navigate`                       | Go to a URL, back, forward, or reload                                                                 |
+| `read`, `find`                   | Read text and controls, or find specific elements                                                     |
+| `click`, `hover`, `drag`         | Interact by ref, selector or coordinates; clicks wait for navigations they start; drag supports HTML5 |
+| `type`, `press`                  | Fill or type into fields (incl. rich editors), select, check, send keys and combos                    |
+| `scroll`, `wait`                 | Scroll or wait for a condition, including network idle                                                |
+| `dialog`                         | Inspect, accept, or dismiss JavaScript dialogs                                                        |
+| `upload`, `download`             | Set files on file inputs; save links or URLs with page cookies                                        |
+| `screenshot`                     | Capture the viewport, full page, or one element                                                       |
+| `evaluate`, `logs`               | Run JavaScript; read console output and requests                                                      |
 
 Parameters: `action`, `tabId`, `url`, `target` (ref, CSS selector or `x,y`), `text`, `mode`, `offset`, `full`, `background`, `files`, `timeoutMs`, `retry`.
 
@@ -74,7 +74,7 @@ Local debugging listens on a random loopback port. The plugin finds it through C
 
 Screenshots of background plugin tabs work while DSH is behind other windows. They are impossible while DSH is minimized (Chromium draws nothing; tested, including capturing the main window) and for native DSH tabs that are not on screen, which report `TAB_HIDDEN` immediately instead of timing out. Agents continue with page reads instead. Showing screenshots requires an image-capable model and compatible attachment storage.
 
-The plugin uses internal DSH APIs that may change with app updates. Browser state is temporary. Reloading the plugin discards its own pages; native tabs remain owned by DSH. Selectors don’t reach into cross-origin frames (use the `f<n>:` refs from `read` instead), and dragging between frames isn’t supported. Browser permission dialogs aren’t supported, and DSH itself cancels native downloads.
+The plugin uses internal DSH APIs that may change with app updates. Browser state is temporary. Reloading the plugin discards its own pages; native tabs remain owned by DSH. Selectors don’t reach into cross-origin frames (use the `f<n>:` refs from `read` or `find` instead), and dragging between frames isn’t supported. Browser permission dialogs aren’t supported, and DSH itself cancels native downloads.
 
 ## Development
 
