@@ -136,13 +136,21 @@ test('uploads are confined to the working directory and downloads folder', async
   await writeFile(join(cwd, 'a.txt'), 'a');
   await writeFile(join(downloads, 'b.txt'), 'b');
   await writeFile(join(outside, 'key'), 'k');
-  await symlink(join(outside, 'key'), join(cwd, 'link'));
+  // Creating symlinks needs extra privileges on Windows; skip that case there.
+  const linked = await symlink(join(outside, 'key'), join(cwd, 'link')).then(
+    () => true,
+    () => false,
+  );
   const files = await resolveUploads(['a.txt', join(downloads, 'b.txt')], {
     cwd,
     roots: [downloads],
   });
   assert.equal(files.length, 2);
-  for (const bad of [join(outside, 'key'), 'link', '../secret/key'])
+  for (const bad of [
+    join(outside, 'key'),
+    ...(linked ? ['link'] : []),
+    '../secret/key',
+  ])
     await assert.rejects(
       resolveUploads([bad], { cwd, roots: [downloads] }),
       /limited to files/,

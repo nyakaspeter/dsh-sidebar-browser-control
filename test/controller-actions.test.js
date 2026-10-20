@@ -100,6 +100,7 @@ test('upload resolves files and targets the frame session of the input', async (
     cwd = join(state, 'cwd');
   await mkdir(cwd);
   await writeFile(join(cwd, 'cv.pdf'), 'x');
+  await writeFile(join(state, 'outside.txt'), 'x');
   const c = new SidebarController({
     endpoint: 'http://127.0.0.1:1',
     stateDir: state,
@@ -127,7 +128,7 @@ test('upload resolves files and targets the frame session of the input', async (
     run(
       c,
       page,
-      { action: 'upload', ref: 'r', files: ['/etc/hosts'] },
+      { action: 'upload', ref: 'r', files: [join(state, 'outside.txt')] },
       { cwd },
     ),
     /limited to files/,
