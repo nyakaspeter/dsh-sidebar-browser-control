@@ -560,6 +560,7 @@ export class SidebarController {
           matched: false,
           code: 'WAIT_TIMEOUT',
           pendingRequests: inflight.size,
+          pending: [...inflight.values()].slice(0, 5),
           message:
             'The network did not go idle within the deadline (long-polling pages may never idle). Read the page before deciding what to do next.',
         };

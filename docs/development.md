@@ -26,6 +26,8 @@ Route keyboard input and reload/back/forward through the guest webview methods. 
 
 Plugin DOM code runs in a CDP isolated world (`Page.createIsolatedWorld`), never in the page's main world; only the user-facing `evaluate` action uses the main world. Out-of-process frames only receive mouse input sent to their own session, in coordinates relative to that session's root frame. Chromium produces no frames for `opacity: 0` layers, so screenshots of parked pages briefly raise the container to `0.01` opacity.
 
+Network-idle tracking counts the main document and main-frame-session requests only: an out-of-process iframe's document request starts in the parent session but finishes in the iframe's own session, sometimes before tracking reaches it. Child sessions are registered on the CDP connection itself so modules that start late still adopt them.
+
 Plugin tabs acquire storage with a per-chat key (`dsh-sidebar-control:<session>`), never DSH's workspace keys, so they never see the user's sign-ins.
 
 The integration uses some undocumented session-specific sidebar APIs and webview attributes. `engines.dsh` is an open range (`>=0.2.0-rc.2`), so DSH does not block the plugin on updates; DSH ignores the `@deepseek-ai/dsh-*` peers when `engines.dsh` is present. Never pin those peers to an exact version. The client reports missing APIs as `DSH_INCOMPATIBLE` instead of failing silently, so after a DSH release run `npm run doctor` and the live tests, then update the tested version in the README. Avoid dumping application logs: they can contain credentials.

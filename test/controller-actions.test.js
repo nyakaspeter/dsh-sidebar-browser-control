@@ -195,7 +195,7 @@ test('networkidle waits for load and for requests already in flight', async () =
   const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
   let state = 'interactive';
   const page = fakePage({ dom: { 'document.readyState': () => state } });
-  page.context.inflight = new Set(['started-before-wait']);
+  page.context.inflight = new Map([['started-before-wait', 'https://x/a']]);
   const started = Date.now();
   const waiting = run(c, page, {
     action: 'wait',
@@ -209,7 +209,7 @@ test('networkidle waits for load and for requests already in flight', async () =
   assert.deepEqual(await waiting, { matched: true });
   assert.ok(Date.now() - started >= 750, 'load, then 500 ms of quiet');
   const stuck = fakePage({ dom: { 'document.readyState': 'complete' } });
-  stuck.context.inflight = new Set(['poll']);
+  stuck.context.inflight = new Map([['poll', 'https://x/poll']]);
   const result = await run(c, stuck, {
     action: 'wait',
     condition: 'networkidle',
@@ -217,6 +217,7 @@ test('networkidle waits for load and for requests already in flight', async () =
   });
   assert.equal(result.code, 'WAIT_TIMEOUT');
   assert.equal(result.pendingRequests, 1);
+  assert.deepEqual(result.pending, ['https://x/poll']);
   c.dispose();
 });
 test('downloads stream from the page in chunks into the chat downloads folder', async () => {

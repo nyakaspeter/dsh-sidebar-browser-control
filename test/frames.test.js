@@ -167,7 +167,28 @@ test('in-flight main-frame requests are tracked from the first attach', async ()
     { requestId: 'oop', type: 'XHR' },
     's1',
   );
-  assert.deepEqual([...ctx.inflight], ['a']);
+  assert.deepEqual([...ctx.inflight.keys()], ['a']);
   cdp.emit('Network.loadingFailed', { requestId: 'a' });
   assert.equal(ctx.inflight.size, 0);
+  // An out-of-process iframe document finishes in the iframe's session.
+  cdp.emit('Network.requestWillBeSent', {
+    requestId: 'frame',
+    type: 'Document',
+  });
+  cdp.emit('Network.loadingFinished', { requestId: 'frame' }, 's1');
+  assert.equal(ctx.inflight.size, 0);
+});
+test('iframe sessions attached before init are adopted with network events', async () => {
+  const cdp = fakeCdp({});
+  cdp.children = new Map([
+    ['early', { type: 'iframe', targetId: 'oop', url: 'https://b.test/' }],
+    ['worker', { type: 'worker', targetId: 'w' }],
+  ]);
+  const ctx = new PageContext(cdp);
+  await ctx.init();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual([...ctx.sessions.keys()], ['early']);
+  assert.ok(
+    cdp.calls.some(([sid, m]) => sid === 'early' && m === 'Network.enable'),
+  );
 });

@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.8.0',
+    const BUILD = '0.8.1',
       PROTOCOL = 2,
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';

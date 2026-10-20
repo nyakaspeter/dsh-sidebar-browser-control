@@ -40,6 +40,9 @@ export class CDP {
     this.sequence = 0;
     this.pending = new Map();
     this.listeners = new Map();
+    // Flattened child sessions (out-of-process iframes) known to this socket,
+    // so modules that start listening late still see earlier attachments.
+    this.children = new Map();
     this.events = [];
     this.recording = false;
     this.eventBytes = 0;
@@ -58,6 +61,13 @@ export class CDP {
           : entry.resolve(message.result);
         return;
       }
+      if (message.method === 'Target.attachedToTarget')
+        this.children.set(message.params.sessionId, {
+          ...message.params.targetInfo,
+          parent: message.sessionId,
+        });
+      if (message.method === 'Target.detachedFromTarget')
+        this.children.delete(message.params.sessionId);
       if (message.method === 'Page.javascriptDialogOpening') {
         this.dialog = { ...message.params };
         if (message.sessionId)

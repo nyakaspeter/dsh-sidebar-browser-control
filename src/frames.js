@@ -15,7 +15,7 @@ export class PageContext {
     this.mainFrame = null;
     this.ready = null;
     this.disposers = [];
-    this.inflight = new Set(); // main-frame-session requests still loading
+    this.inflight = new Map(); // request id -> url, still loading
   }
   init(signal) {
     this.ready ??= (async () => {
@@ -28,25 +28,9 @@ export class PageContext {
         cdp.on('Page.frameDetached', ({ frameId }, sessionId) =>
           this.forget(sessionId, frameId),
         ),
-        cdp.on('Target.attachedToTarget', (event, parent) => {
-          if (event.targetInfo.type !== 'iframe') return;
-          this.sessions.set(event.sessionId, {
-            targetId: event.targetInfo.targetId,
-            url: event.targetInfo.url,
-            parent,
-          });
-          void cdp
-            .call('Page.enable', {}, undefined, event.sessionId)
-            .then(() =>
-              cdp.call(
-                'Target.setAutoAttach',
-                autoAttach,
-                undefined,
-                event.sessionId,
-              ),
-            )
-            .catch(() => {});
-        }),
+        cdp.on('Target.attachedToTarget', (event, parent) =>
+          this.adopt(event.sessionId, { ...event.targetInfo, parent }),
+        ),
         cdp.on('Target.detachedFromTarget', ({ sessionId }) => {
           this.sessions.delete(sessionId);
           for (const key of this.worlds.keys())
@@ -55,18 +39,31 @@ export class PageContext {
       );
       // Track requests from first attach so network idle also sees requests
       // that started before a wait began.
-      const done = ({ requestId }, sessionId) => {
-        if (!sessionId) this.inflight.delete(requestId);
-      };
+      // An out-of-process iframe's document request starts in this session
+      // but finishes in the iframe's own session; request ids are unique.
+      const done = ({ requestId }) => this.inflight.delete(requestId);
       this.disposers.push(
         cdp.on('Network.requestWillBeSent', (event, sessionId) => {
-          if (!sessionId && event.type !== 'EventSource')
-            this.inflight.add(event.requestId);
+          // Iframe documents finish in other sessions (out-of-process
+          // frames), possibly before tracking reaches them, so only the main
+          // document and main-frame-session subrequests count.
+          if (
+            sessionId ||
+            event.type === 'EventSource' ||
+            (event.type === 'Document' &&
+              this.mainFrame &&
+              event.frameId !== this.mainFrame)
+          )
+            return;
+          this.inflight.set(event.requestId, event.request?.url);
         }),
         cdp.on('Network.loadingFinished', done),
         cdp.on('Network.loadingFailed', done),
       );
+      for (const [sessionId, info] of cdp.children ?? [])
+        this.adopt(sessionId, info);
       await cdp.call('Page.enable', {}, signal);
+      await this.main(signal).catch(() => {});
       await cdp.call('Network.enable', {}, signal).catch(() => {});
       // Older or restricted targets may refuse auto-attach; cross-origin
       // out-of-process frames are then reported as inaccessible.
@@ -75,6 +72,22 @@ export class PageContext {
         .catch(() => {});
     })();
     return this.ready;
+  }
+  // Out-of-process iframe sessions: track them and enable the domains frame
+  // reads and network-idle tracking need.
+  adopt(sessionId, info) {
+    if (info.type !== 'iframe' || this.sessions.has(sessionId)) return;
+    this.sessions.set(sessionId, {
+      targetId: info.targetId,
+      url: info.url,
+      parent: info.parent,
+    });
+    const call = (method, params = {}) =>
+      this.cdp.call(method, params, undefined, sessionId);
+    void call('Page.enable')
+      .then(() => call('Network.enable'))
+      .then(() => call('Target.setAutoAttach', autoAttach))
+      .catch(() => {});
   }
   forget(sessionId = '', frameId) {
     this.worlds.delete(`${sessionId}|${frameId}`);
