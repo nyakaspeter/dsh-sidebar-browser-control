@@ -1,0 +1,5 @@
+- insert:
+    - id: sidebar-browser-control
+      name: dsh-sidebar-browser-control
+      config:
+        autoCookieConsent: true

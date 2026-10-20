@@ -1,0 +1,54 @@
+{
+  "name": "dsh-sidebar-browser-control",
+  "version": "0.5.3",
+  "description": "Agent control of DeepSeek Harness sidebar browser through local CDP",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "doctor": "node scripts/doctor.mjs",
+    "test:live": "node scripts/interaction-test.mjs && node scripts/compact-test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "scripts/auto-restart.mjs",
+    "README.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-browser",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  }
+}
