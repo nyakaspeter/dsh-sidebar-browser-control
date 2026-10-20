@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 
-export function endpoint(value = 'http://127.0.0.1:19222') {
+export function endpoint(value) {
   const url = new URL(value);
   if (
     url.protocol !== 'http:' ||
@@ -32,11 +32,14 @@ export async function targets(base) {
   if (!response.ok) throw new Error(`CDP discovery failed: ${response.status}`);
   return response.json();
 }
+// One flattened CDP connection. Child sessions (cross-origin iframes) share the
+// socket and are addressed by sessionId; events carry the session they came from.
 export class CDP {
   constructor(ws) {
     this.ws = ws;
     this.sequence = 0;
     this.pending = new Map();
+    this.listeners = new Map();
     this.events = [];
     this.recording = false;
     this.eventBytes = 0;
@@ -53,29 +56,49 @@ export class CDP {
         message.error
           ? entry.reject(new Error(message.error.message))
           : entry.resolve(message.result);
-      } else {
-        if (message.method === 'Page.javascriptDialogOpening') {
-          this.dialog = message.params;
-          this.lastDialog = { ...message.params, status: 'open' };
-          const error = Object.assign(
-            new Error('A browser dialog requires handling.'),
-            { dialog: this.dialog },
-          );
-          this.fail(error);
-        }
-        if (message.method === 'Page.javascriptDialogClosed') {
-          this.lastDialog = {
-            ...this.lastDialog,
-            ...message.params,
-            status: 'closed',
-          };
-          this.dialog = null;
-        }
-        if (this.recording) this.recordEvent(message);
+        return;
       }
+      if (message.method === 'Page.javascriptDialogOpening') {
+        this.dialog = { ...message.params };
+        if (message.sessionId)
+          Object.defineProperty(this.dialog, 'sessionId', {
+            value: message.sessionId,
+          });
+        this.lastDialog = { ...message.params, status: 'open' };
+        this.fail(
+          Object.assign(new Error('A browser dialog requires handling.'), {
+            dialog: this.dialog,
+          }),
+        );
+      }
+      if (message.method === 'Page.javascriptDialogClosed') {
+        this.lastDialog = {
+          ...this.lastDialog,
+          ...message.params,
+          status: 'closed',
+        };
+        this.dialog = null;
+      }
+      for (const listener of [...(this.listeners.get(message.method) ?? [])])
+        try {
+          listener(message.params, message.sessionId);
+        } catch (error) {
+          console.error(error);
+        }
+      if (this.recording) this.recordEvent(message);
     });
     ws.on('close', () => this.fail(new Error('CDP connection closed')));
     ws.on('error', (error) => this.fail(error));
+  }
+  on(method, listener) {
+    let set = this.listeners.get(method);
+    if (!set) this.listeners.set(method, (set = new Set()));
+    set.add(listener);
+    return () => {
+      set.delete(listener);
+      if (!set.size && this.listeners.get(method) === set)
+        this.listeners.delete(method);
+    };
   }
   recordEvent(message) {
     let text = JSON.stringify(message);
@@ -135,7 +158,7 @@ export class CDP {
     });
     return new CDP(ws);
   }
-  call(method, params = {}, signal) {
+  call(method, params = {}, signal, sessionId) {
     signal?.throwIfAborted();
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
@@ -155,20 +178,29 @@ export class CDP {
       };
       this.pending.set(id, { resolve, reject, cleanup });
       signal?.addEventListener('abort', abort, { once: true });
-      this.ws.send(JSON.stringify({ id, method, params }), (error) => {
-        if (error) {
-          this.pending.delete(id);
-          cleanup();
-          reject(error);
-        }
-      });
+      this.ws.send(
+        JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) }),
+        (error) => {
+          if (error) {
+            this.pending.delete(id);
+            cleanup();
+            reject(error);
+          }
+        },
+      );
     });
   }
-  async evaluate(expression, signal) {
+  async evaluate(expression, signal, { contextId, sessionId } = {}) {
     const result = await this.call(
       'Runtime.evaluate',
-      { expression, awaitPromise: true, returnByValue: true },
+      {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        ...(contextId && { contextId }),
+      },
       signal,
+      sessionId,
     );
     if (result.exceptionDetails)
       throw new Error(

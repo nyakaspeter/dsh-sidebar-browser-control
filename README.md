@@ -18,7 +18,11 @@ Enable the plugin, then fully quit and reopen DSH. Launch DSH normally—no term
 
 On Linux, quit DSH normally when browser setup is pending; the helper reopens it automatically. On Windows, do the same if closing the window leaves DSH in the tray. The pending restart expires after five minutes and never force-quits the app.
 
-Updates require reinstalling and fully restarting DSH; they are not automatic.
+DSH has no plugin auto-update. The plugin checks GitHub releases at most once a day and, when a newer version exists, the agent mentions it once and `status` reports it. To update, add the repository URL again in **Plugins → Add plugin**, then fully quit and reopen DSH. Turn the check off under **Plugins → dsh-sidebar-browser-control → Check for plugin updates**.
+
+### DSH updates
+
+The plugin declares `engines.dsh >=0.2.0-rc.2`, so DSH updates no longer block it. It depends on some undocumented DSH internals; if a release changes them, `status` reports `DSH_INCOMPATIBLE` or a diagnostics warning instead of failing silently.
 
 ## Use
 
@@ -30,12 +34,14 @@ Ask naturally:
 >
 > Fill in the form in my existing browser tab.
 
-Agents discover the `sidebar_browser` tool automatically. It supports reading pages, clicking, typing, keypresses, scrolling, dragging, screenshots, and page debugging. Detailed instructions are available to the agent through `help`.
+Agents discover the `sidebar_browser` tool automatically. It supports reading pages (including cross-origin frames), clicking, typing, keypresses, scrolling, dragging, uploads, downloads, screenshots, and page debugging. Detailed instructions are available to the agent through `help`.
 
 - Requests like “open Google News” or “show me that page” reveal the sidebar, including when you imply wanting to see it. Questions like “what’s the latest news on Google News?” use background browsing and get an answer in chat. Explicit background requests stay hidden. Revealing an existing page preserves its running state.
 - Agents keep working when you switch chats. Each agent can access only its own chat’s tabs; that chat must remain loaded.
 - Existing native tabs keep DSH’s toolbar. Background tabs use a matching plugin toolbar, including when revealed.
 - Cookie handling defaults to rejecting optional cookies and preserving existing choices. Disable it under **Plugins → dsh-sidebar-browser-control → Automatically handle cookie consent**. This is agent guidance, not an independent banner-clicking script.
+- By default, agent tabs share cookies and sign-ins with DSH’s own browser tabs in the same workspace, so sites you signed into work for the agent too. Turn off **Share sign-ins with DSH browser tabs** to give each chat separate, empty storage.
+- Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (up to 50 MB) are saved to that per-chat downloads folder in the plugin’s state directory; agents move them with their normal file tools.
 - Reads are compact and paginated. Debug event collection starts only when requested.
 
 ## Tool actions
@@ -50,20 +56,25 @@ One tool, `sidebar_browser`, provides these actions. Page actions generally requ
 | `read`                           | Read page text and controls with temporary references             |
 | `click`, `hover`, `drag`         | Interact using references, selectors, or coordinates              |
 | `type`, `press`                  | Fill fields, select options, check boxes, and send keys/modifiers |
-| `scroll`, `wait`                 | Scroll or wait for a page condition                               |
+| `scroll`, `wait`                 | Scroll or wait for a condition, including network idle            |
 | `dialog`                         | Inspect, accept, or dismiss JavaScript dialogs                    |
-| `screenshot`                     | Capture the page with bounded failure handling                    |
+| `upload`, `download`             | Set files on file inputs; save links or URLs with page cookies    |
+| `screenshot`                     | Capture the viewport, full page, or one element (PNG/JPEG)        |
 | `evaluate`                       | Run JavaScript in the page                                        |
 | `debug_start`, `debug_read`      | Collect and read bounded network/console events                   |
-| `cdp`                            | Send a permitted page-level DevTools command                      |
+| `cdp`                            | Send a permitted page-level DevTools command (policy-checked)     |
+
+## Security
+
+The plugin’s DOM code runs in a separate JavaScript world, so pages can’t see or tamper with it. Raw `cdp` commands are limited to page-level domains. Commands that would bypass the tool’s own rules are refused: navigation and URL checks, screenshots, key routing, dialogs, uploads, downloads, cookie access across the storage partition, and closing the guest. The download fallback used when CORS blocks an in-page fetch refuses private and loopback addresses, and it looks up cookies separately for each redirect.
+
+Local debugging listens on a random loopback port. The plugin finds it through Chromium’s `DevToolsActivePort` file and checks the browser ID before connecting, so a stale file or another process on that port is rejected. Any local process can still reach the debugging endpoint while DSH runs, and that endpoint gives broad control of the app. Website content is untrusted, and debug output may contain sensitive page data. To remove the integration and debugging flags, disable or uninstall the plugin, then quit and reopen DSH normally.
 
 ## Limitations
 
-Screenshots can fail when DSH is hidden or minimized. Failures are bounded; agents are instructed to continue with page reads rather than retrying. Showing screenshots requires an image-capable model and compatible attachment storage.
+Screenshots can fail when DSH is minimized. Failures are bounded; agents are told to continue with page reads rather than retry. Showing screenshots requires an image-capable model and compatible attachment storage.
 
-The plugin expects one DSH window and uses internal APIs that may change with app updates. Browser state is temporary. Reloading the plugin discards its own pages; native tabs remain owned by DSH. Cross-origin frame traversal, uploads/downloads, and browser permission dialogs are not generally supported.
-
-Local debugging uses `127.0.0.1:19222` and grants broad app access to local processes. Website content is untrusted, and debug output may contain sensitive page data. To remove the integration and debugging flags, disable/uninstall the plugin, then quit and reopen DSH normally.
+The plugin uses internal DSH APIs that may change with app updates. Browser state is temporary. Reloading the plugin discards its own pages; native tabs remain owned by DSH. Selectors don’t reach into cross-origin frames (use the `f<n>:` refs from `read` instead), and dragging between frames isn’t supported. Browser permission dialogs aren’t supported, and DSH itself cancels native downloads.
 
 ## Development
 
@@ -73,6 +84,7 @@ Requires Node.js 22+:
 npm ci
 npm test
 npm run format:check
+npm run check:dsh   # verify the installed DSH still has every integration point
 ```
 
 See [development notes](docs/development.md) for architecture, local installation, diagnostics, and live tests.

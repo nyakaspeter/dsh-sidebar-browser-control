@@ -16,7 +16,7 @@ export function pageDOM(action, args) {
             y: offset.y + r.top + e.clientTop,
           });
         } catch {
-          frames.push({ src: e.src, accessible: false });
+          frames.push({ src: e.src, name: e.name || undefined });
         }
       }
     }
@@ -51,22 +51,17 @@ export function pageDOM(action, args) {
     return e;
   }
   if (action === 'read') {
+    // Collects up to fixed caps; the host paginates across this frame and any
+    // cross-origin frames read in their own isolated worlds.
     const scope = args.ref || args.selector ? target() : null;
     const epoch = crypto.randomUUID().slice(0, 8),
       refs = new Map();
     globalThis[slot] = { epoch, refs };
     const full = args.detail === 'full',
-      maxText = full ? 40000 : 6000,
-      maxElements = full ? 200 : 40;
-    const textOffset = args.textOffset ?? 0,
-      elementOffset = args.elementOffset ?? 0;
-    if (
-      !Number.isSafeInteger(textOffset) ||
-      textOffset < 0 ||
-      !Number.isSafeInteger(elementOffset) ||
-      elementOffset < 0
-    )
-      throw Error('Read offsets must be nonnegative integers.');
+      maxText = 400000,
+      maxElements = 2000,
+      frameOffset = args.frameOffset ?? { x: 0, y: 0 },
+      viewport = args.viewport ?? { width: innerWidth, height: innerHeight };
     const readRoots = scope ? [{ root: scope, offset: { x: 0, y: 0 } }] : roots;
     const elements = [];
     let total = 0;
@@ -75,15 +70,17 @@ export function pageDOM(action, args) {
         'a,button,input,textarea,select,[role],[contenteditable="true"],summary',
       )) {
         if (!visible(e)) continue;
-        const r = e.getBoundingClientRect();
+        const r = e.getBoundingClientRect(),
+          x = offset.x + frameOffset.x,
+          y = offset.y + frameOffset.y;
         const inViewport =
-          r.bottom + offset.y > 0 &&
-          r.right + offset.x > 0 &&
-          r.top + offset.y < innerHeight &&
-          r.left + offset.x < innerWidth;
+          r.bottom + y > 0 &&
+          r.right + x > 0 &&
+          r.top + y < viewport.height &&
+          r.left + x < viewport.width;
         if (args.viewportOnly && !inViewport) continue;
         total++;
-        if (total <= elementOffset || elements.length >= maxElements) continue;
+        if (elements.length >= maxElements) continue;
         const ref = `r${epoch}-${elements.length + 1}`;
         refs.set(ref, e);
         elements.push({
@@ -134,20 +131,10 @@ export function pageDOM(action, args) {
       url: location.href,
       title: document.title,
       readyState: document.readyState,
-      text: text.slice(textOffset, textOffset + maxText),
+      text: text.slice(0, maxText),
+      textLength: text.length,
       elements,
-      truncated:
-        text.length > textOffset + maxText ||
-        total > elementOffset + maxElements,
-      ...(text.length > textOffset + maxText ||
-      total > elementOffset + maxElements
-        ? {
-            next: {
-              textOffset: Math.min(text.length, textOffset + maxText),
-              elementOffset: Math.min(total, elementOffset + maxElements),
-            },
-          }
-        : {}),
+      total,
       ...(frames.length ? { inaccessibleFrames: frames } : {}),
     };
   }
@@ -182,7 +169,21 @@ export function pageDOM(action, args) {
   }
   const e = target(),
     win = e.ownerDocument.defaultView;
-  if (action === 'point' || action === 'focus') {
+  // Returned by reference (returnByValue:false) for DOM.setFileInputFiles.
+  if (action === 'fileInput') {
+    if (!(e instanceof win.HTMLInputElement) || e.type !== 'file')
+      throw Error('Target is not a file input.');
+    if (e.disabled) throw Error('File input is disabled.');
+    if ((args.count ?? 1) > 1 && !e.multiple)
+      throw Error('This file input accepts only one file.');
+    return e;
+  }
+  if (action === 'href') {
+    const url = e.href || e.currentSrc || e.src || e.data;
+    if (!url) throw Error('Target has no link or source URL.');
+    return { url: String(url), download: e.download || undefined };
+  }
+  if (action === 'point' || action === 'focus' || action === 'rect') {
     if (args.scroll !== false)
       e.scrollIntoView({ block: 'center', inline: 'nearest' });
     if (action === 'focus') {
@@ -195,8 +196,8 @@ export function pageDOM(action, args) {
     }
     if (!visible(e)) throw Error('Target is not visible.');
     const r = e.getBoundingClientRect();
-    let x = r.left + r.width / 2,
-      y = r.top + r.height / 2,
+    let x = action === 'rect' ? r.left : r.left + r.width / 2,
+      y = action === 'rect' ? r.top : r.top + r.height / 2,
       w = win;
     while (w !== window) {
       const f = w.frameElement;
@@ -206,7 +207,9 @@ export function pageDOM(action, args) {
       y += fr.top + f.clientTop;
       w = w.parent;
     }
-    return { x, y };
+    return action === 'rect'
+      ? { x, y, width: r.width, height: r.height }
+      : { x, y };
   }
   if (action === 'type') {
     if (e.disabled || e.readOnly) throw Error('Element is not editable.');

@@ -1,14 +1,20 @@
 {
   "name": "dsh-sidebar-browser-control",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Agent control of DeepSeek Harness sidebar browser through local CDP",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nyakaspeter/dsh-sidebar-browser-control.git"
+  },
+  "homepage": "https://github.com/nyakaspeter/dsh-sidebar-browser-control#readme",
   "main": "src/index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
     "doctor": "node scripts/doctor.mjs",
-    "test:live": "node scripts/interaction-test.mjs && node scripts/compact-test.mjs",
+    "test:live": "node scripts/interaction-test.mjs && node scripts/compact-test.mjs && node scripts/features-test.mjs",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "check:dsh": "node scripts/check-dsh.mjs"
   },
   "license": "ISC",
   "type": "module",
@@ -40,7 +46,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-sidebar-browser",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-workspace-controller"
       ],
       "platform": "web"
     },
@@ -49,6 +56,7 @@
     }
   },
   "devDependencies": {
+    "@electron/asar": "3.2.17",
     "prettier": "3.6.2"
   }
 }

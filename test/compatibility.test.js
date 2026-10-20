@@ -31,9 +31,8 @@ test('packaged browser client agrees with the package version', () => {
     new URL('../src/client.js', import.meta.url),
     'utf8',
   );
-  const builds = [...source.matchAll(/build:\s*["']([^"']+)["']/g)].map(
+  const builds = [...source.matchAll(/BUILD = ["']([^"']+)["']/g)].map(
     (m) => m[1],
   );
-  assert.ok(builds.length);
-  assert.ok(builds.every((b) => b === BUILD));
+  assert.deepEqual(builds, [BUILD]);
 });

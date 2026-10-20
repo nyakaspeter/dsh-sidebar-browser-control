@@ -12,7 +12,7 @@ test('restricts debugging transport to loopback and navigation to HTTP(S)', () =
     'http://u:p@127.0.0.1:9222',
   ])
     assert.throws(() => endpoint(value));
-  assert.equal(endpoint(), 'http://127.0.0.1:19222');
+  assert.equal(endpoint('http://127.0.0.1:41234/'), 'http://127.0.0.1:41234');
   for (const url of [
     'javascript:alert(1)',
     'file:///etc/passwd',

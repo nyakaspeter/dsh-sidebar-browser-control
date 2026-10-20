@@ -6,7 +6,10 @@ const source = readFileSync(
   new URL('../src/client.js', import.meta.url),
   'utf8',
 );
-function setup(broken = false) {
+function setup(
+  broken = false,
+  { workspaces, active, protocolVersion = 1 } = {},
+) {
   const nativeViews = new Map();
   const rows = new Map([
     ['A', []],
@@ -17,7 +20,7 @@ function setup(broken = false) {
     cleanups = [];
   const sidebar = {
     mounted: { getSnapshot: () => 'B' },
-    active: () => undefined,
+    active: () => active,
     isExpanded: () => true,
     actionsFor: (s) =>
       rows.has(s)
@@ -79,18 +82,22 @@ function setup(broken = false) {
       this.url = url;
     }
   }
+  const acquired = [];
   const bridge = {
-    acquire: async (session) => ({
-      lease: `lease-${session}-${id}`,
-      partition: session,
-    }),
+    acquire: async (session) => (
+      acquired.push(session),
+      {
+        lease: `lease-${session}-${id}`,
+        partition: session,
+      }
+    ),
     release: async (lease) => calls.push(['release', lease]),
   };
   if (broken) delete bridge.acquire;
   const window = {
     addEventListener() {},
     removeEventListener() {},
-    dshDesktop: { browser: bridge },
+    dshDesktop: { protocolVersion, browser: bridge },
     __ModuleLoader__: {
       load: (d) =>
         d
@@ -100,6 +107,11 @@ function setup(broken = false) {
             sidebarRightTabs: { register: () => () => {} },
             slots: { inject: () => () => {}, register: () => () => {} },
             effect: (fn) => cleanups.push(fn()),
+            ...(workspaces && {
+              inject: (names, callback) =>
+                names[0] === 'workspaces' &&
+                callback({ workspaces, effect: () => {} }),
+            }),
           }),
     },
   };
@@ -125,6 +137,7 @@ function setup(broken = false) {
   });
   return {
     api: window.__dshSidebarControl,
+    acquired,
     calls,
     dispose: async () => {
       for (const c of cleanups.reverse()) await c?.();
@@ -261,4 +274,98 @@ test('native pages retain DSH ownership on plugin disposal', async () => {
     calls.some((c) => c[0] === 'release'),
     false,
   );
+});
+
+// The client runs in a vm realm; compare its objects structurally.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const workspaceList = (phase = 'ready') => {
+  const listeners = new Set();
+  let state = {
+    phase,
+    items: [{ path: '/work/project', sessionIds: ['A'] }],
+  };
+  return {
+    getSnapshot: () => state,
+    subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+    ready() {
+      state = { ...state, phase: 'ready' };
+      listeners.forEach((fn) => fn());
+    },
+  };
+};
+test('plugin tabs share DSH workspace storage unless the setting turns it off', async () => {
+  const list = workspaceList();
+  const { api, acquired, dispose } = setup(false, { workspaces: { list } });
+  try {
+    await api.open('A', 'https://example.org');
+    await api.open('B', 'https://example.org');
+    await api.open('A', 'https://example.org', true, { shareStorage: false });
+    assert.deepEqual(acquired, [
+      'cwd:/work/project',
+      'session:B',
+      'dsh-sidebar-control:A',
+    ]);
+  } finally {
+    await dispose();
+  }
+});
+test('storage waits for workspaces to load before choosing a partition', async () => {
+  const list = workspaceList('loading');
+  const { api, acquired, dispose } = setup(false, { workspaces: { list } });
+  try {
+    const opening = api.open('A', 'https://example.org');
+    setTimeout(() => list.ready(), 20);
+    await opening;
+    assert.deepEqual(acquired, ['cwd:/work/project']);
+  } finally {
+    await dispose();
+  }
+});
+test('hasSession reports whether this window holds and shows a chat', async () => {
+  const { api, dispose } = setup();
+  try {
+    assert.deepEqual(plain(api.hasSession('B')), {
+      loaded: true,
+      visible: true,
+    });
+    assert.deepEqual(plain(api.hasSession('A')), {
+      loaded: true,
+      visible: false,
+    });
+    assert.deepEqual(plain(api.hasSession('Z')), {
+      loaded: false,
+      visible: false,
+    });
+  } finally {
+    await dispose();
+  }
+  const broken = setup(true);
+  try {
+    assert.deepEqual(plain(broken.api.hasSession('B')), {
+      loaded: true,
+      visible: true,
+    });
+  } finally {
+    await broken.dispose();
+  }
+});
+test('status warns when DSH markup or desktop protocol stop matching', async () => {
+  const healthy = setup();
+  try {
+    assert.deepEqual(plain(healthy.api.status().diagnostics.warnings), []);
+  } finally {
+    await healthy.dispose();
+  }
+  const changed = setup(false, {
+    active: { id: 'tab-x', kind: 'browser' },
+    protocolVersion: 2,
+  });
+  try {
+    const { warnings } = changed.api.status().diagnostics;
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0], /markup may have changed/);
+    assert.match(warnings[1], /protocol 2/);
+  } finally {
+    await changed.dispose();
+  }
 });

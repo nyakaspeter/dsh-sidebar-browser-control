@@ -71,6 +71,23 @@ export function stateDirectory(
   return path.join(base, 'dsh-sidebar-browser-control');
 }
 
+// Electron's default userData directory for the "@deepseek-ai/dsh-desktop" app name.
+// Chromium writes DevToolsActivePort here whenever remote debugging is enabled.
+export function userDataDirectory(
+  platform = process.platform,
+  env = process.env,
+  home = homedir(),
+) {
+  const path = platform === 'win32' ? win32 : posix;
+  const base =
+    platform === 'darwin'
+      ? path.join(home, 'Library/Application Support')
+      : platform === 'win32'
+        ? env.APPDATA || path.join(home, 'AppData/Roaming')
+        : env.XDG_CONFIG_HOME || path.join(home, '.config');
+  return path.join(base, '@deepseek-ai', 'dsh-desktop');
+}
+
 export function processIdentity(record) {
   return {
     ...record,

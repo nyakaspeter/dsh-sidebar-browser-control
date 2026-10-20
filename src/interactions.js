@@ -41,16 +41,18 @@ export function keySpec(key) {
 }
 export async function interact(page, args, signal) {
   const call = (method, params, s = signal) => page.call(method, params, s);
+  // The controller supplies dom() to route frame refs and use isolated worlds.
   const dom = (action, a = args, s = signal) =>
-    page.evaluate(domExpression(action, a), s);
+    page.dom
+      ? page.dom(action, a, s)
+      : page.evaluate(domExpression(action, a), s);
   const point = async (a) => {
     if (a.ref || a.selector) return dom('point', a);
     if (!Number.isFinite(a.x) || !Number.isFinite(a.y) || a.x < 0 || a.y < 0)
       throw Error('Provide ref/selector or nonnegative x and y coordinates.');
     return { x: a.x, y: a.y };
   };
-  if (args.action === 'read' || args.action === 'scroll')
-    return dom(args.action);
+  if (args.action === 'scroll') return dom('scroll');
   if (args.action === 'wait') {
     if (
       !['visible', 'hidden', 'text', 'url', 'ready'].includes(
@@ -142,6 +144,8 @@ export async function interact(page, args, signal) {
           scroll: false,
         })
       : start;
+  if (args.action === 'drag' && start.session !== end.session)
+    throw Error('Drag between different cross-origin frames is not supported.');
   // Resolving a destination can scroll the page; recalculate source coordinates.
   const from = start;
   let released = true;
@@ -163,6 +167,7 @@ export async function interact(page, args, signal) {
             buttons: button === 'left' ? 1 : button === 'right' ? 2 : 4,
             x: from.x + ((end.x - from.x) * i) / 10,
             y: from.y + ((end.y - from.y) * i) / 10,
+            ...(from.session !== undefined && { session: from.session }),
           });
       await call('Input.dispatchMouseEvent', {
         type: 'mouseReleased',

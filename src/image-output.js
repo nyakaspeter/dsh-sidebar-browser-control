@@ -26,7 +26,11 @@ export async function admitScreenshot(ctx, exec, result) {
     if (!data.length || data.toString('base64') !== result.data)
       return unavailable('capture returned invalid image data');
     const [attachment] = await attachments.saveImages([
-      { data, mediaType: 'image/png' },
+      {
+        data,
+        mediaType:
+          result.mediaType === 'image/jpeg' ? 'image/jpeg' : 'image/png',
+      },
     ]);
     if (!attachment?.attachmentId)
       return unavailable('image storage returned no attachment reference');

@@ -2,16 +2,19 @@
 
 ## Structure
 
-- `src/index.js`: tool registration, input schema, cookie setting, and output integration.
-- `src/client.js`: sidebar registration, persistent webviews, native-tab discovery, toolbar, and plugin settings.
-- `src/controller.js`: chat ownership, command dispatch, per-chat queues, and connection lifecycle.
-- `src/cdp.js`: loopback transport, cancellation, dialog tracking, and bounded debug buffers.
-- `src/page-dom.js`, `src/interactions.js`: DOM snapshots, references, and input actions.
+- `src/index.js`: tool registration, input schema, settings, update notices and output integration.
+- `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, settings card, workspace storage keys, page registry and agent API, layout, tab title/toolbar.
+- `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching and action dispatch (read, upload, download, screenshot, network idle).
+- `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets and frame-qualified refs.
+- `src/cdp.js`, `src/endpoint.js`: loopback transport with child sessions and event subscriptions; `DevToolsActivePort` discovery and verification.
+- `src/policy.js`: what the raw `cdp` action may send.
+- `src/page-dom.js`, `src/interactions.js`, `src/read.js`: in-page DOM snapshots and actions, input dispatch, cross-frame read pagination.
+- `src/transfer.js`: download naming/saving, host fallback with private-address refusal, upload path confinement.
 - `src/screenshot.js`, `src/image-output.js`: bounded capture and DSH image attachments.
 - `src/autostart.js`, `src/desktop.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup.
-- `src/compatibility.js`, `src/help.js`: build checks and on-demand tool guidance.
+- `src/compatibility.js`, `src/help.js`, `src/updates.js`: build checks, sectioned agent guidance, GitHub release checks.
 
-Client code runs in DSH’s module loader; host code runs as an ESM plugin. No build step is needed. Keep the client build literals synchronized with `package.json`; the compatibility test checks this.
+Client code runs in DSH's module loader as a single file; there is no build step. Keep the client `BUILD` literal synchronized with `package.json`; the compatibility test checks this.
 
 ## Integration constraints
 
@@ -21,7 +24,22 @@ Native tabs remain owned by DSH. Do not release their leases on plugin unload. N
 
 Route keyboard input and reload/back/forward through the guest webview methods. Direct CDP key dispatch and history/reload commands affected the main DSH window during integration testing. Do not use native `capturePage`: it caused an Electron crash. Keep screenshot failures bounded and require explicit user-requested retries.
 
+Plugin DOM code runs in a CDP isolated world (`Page.createIsolatedWorld`), never in the page's main world; only the user-facing `evaluate` action uses the main world. Out-of-process frames only receive mouse input sent to their own session, in coordinates relative to that session's root frame. Chromium produces no frames for `opacity: 0` layers, so screenshots of parked pages briefly raise the container to `0.01` opacity.
+
+Plugin tabs acquire storage with the same workspace key DSH's browser uses (`cwd:<path>` or `session:<id>`), unless the user turned sharing off.
+
 The integration uses some undocumented session-specific sidebar APIs and webview attributes. `engines.dsh` is an open range (`>=0.2.0-rc.2`), so DSH does not block the plugin on updates; DSH ignores the `@deepseek-ai/dsh-*` peers when `engines.dsh` is present. Never pin those peers to an exact version. The client reports missing APIs as `DSH_INCOMPATIBLE` instead of failing silently, so after a DSH release run `npm run doctor` and the live tests, then update the tested version in the README. Avoid dumping application logs: they can contain credentials.
+
+## After a DSH release
+
+1. `npm run check:dsh` reads the installed `app.asar` and verifies every API, markup string and storage-key format the plugin depends on.
+2. `npm run doctor` with the plugin enabled checks the running app, including client diagnostics warnings.
+3. `npm run test:live` in a disposable chat.
+4. Update the tested version in the README.
+
+## Releasing
+
+Bump `version` in `package.json` and the client `BUILD` literal, commit, then push a `vX.Y.Z` tag. The release workflow tests, checks that the tag matches the version, and attaches the packed `.tgz` to a GitHub release. Installed plugins learn about it through the daily update check.
 
 ## Live tests
 
@@ -31,7 +49,7 @@ Enable the plugin, run `npm run doctor`, and select a disposable test chat. Thes
 npm run test:live
 ```
 
-This runs interaction and compact-read regression checks. Additional checks:
+This runs interaction, compact-read and feature checks. The feature check covers isolated worlds against a page that monkeypatches DOM APIs, in-process and out-of-process cross-origin frames, upload, download (including the private-address refusal), screenshot modes, network idle and the `cdp` policy. Additional checks:
 
 | Command                                                 | Coverage                                                       |
 | ------------------------------------------------------- | -------------------------------------------------------------- |
@@ -54,4 +72,4 @@ After installing a new archive, fully quit/reopen DSH to reload host and client 
 
 Requires Node.js 22 or newer. Run `npm ci`, `npm test`, and `npm pack`, then install the generated `.tgz` through DSH’s Add plugin dialog. Fully quit/reopen after upgrading. Run `npm run doctor` to check the connection and host/client build match.
 
-Startup discovers the parent DSH process and bundled Node runtime, using loopback port 19222. macOS uses the detected app bundle; Windows uses the detected executable; Linux preserves the original AppImage path when available. There are no custom launcher or environment settings. The helper makes at most one normal-restart attempt per manual app launch, with an atomic claim to prevent duplicates and a launch marker to prevent loops. It never force-quits DSH. Linux waits for normal user Quit; Windows requests window close but may also need Quit when DSH remains in the tray. The helper expires after five minutes. Failure diagnostics live in the platform state directory: macOS Application Support, Windows LocalAppData, or Linux XDG state home, under `dsh-sidebar-browser-control`. Unit tests run on all three OSes in CI; only macOS desktop integration has been locally validated.
+Startup discovers the parent DSH process and bundled Node runtime. DSH is relaunched with `--remote-debugging-port=0`; the plugin reads the port from `DevToolsActivePort` in DSH's Electron user-data directory and verifies the browser socket path before use. macOS uses the detected app bundle; Windows uses the detected executable; Linux preserves the original AppImage path when available. There are no custom launcher or environment settings. The helper makes at most one normal-restart attempt per manual app launch, with an atomic claim to prevent duplicates and a launch marker to prevent loops. It never force-quits DSH. Linux waits for normal user Quit; Windows requests window close but may also need Quit when DSH remains in the tray. The helper expires after five minutes. Failure diagnostics live in the platform state directory: macOS Application Support, Windows LocalAppData, or Linux XDG state home, under `dsh-sidebar-browser-control`. Unit tests run on all three OSes in CI; only macOS desktop integration has been locally validated.

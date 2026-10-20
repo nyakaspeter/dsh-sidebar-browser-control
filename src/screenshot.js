@@ -4,7 +4,10 @@ export class ScreenshotGuard {
     this.timeoutMs = timeoutMs;
     this.blocked = new Map();
   }
-  async capture(key, { visible, capture, signal, retry = false }) {
+  async capture(
+    key,
+    { visible, capture, signal, retry = false, timeoutMs = this.timeoutMs },
+  ) {
     signal?.throwIfAborted();
     if (retry) this.blocked.delete(key);
     if (this.blocked.has(key)) return this.blocked.get(key);
@@ -20,7 +23,7 @@ export class ScreenshotGuard {
       this.blocked.set(key, result);
       return result;
     };
-    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const timeout = AbortSignal.timeout(timeoutMs);
     const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
       if (!(await visible(bounded)))
@@ -32,7 +35,7 @@ export class ScreenshotGuard {
       signal?.throwIfAborted();
       return fail(
         timeout.aborted
-          ? 'Capture exceeded the five-second limit.'
+          ? `Capture exceeded the ${timeoutMs / 1000}-second limit.`
           : String(error.message ?? error),
       );
     }

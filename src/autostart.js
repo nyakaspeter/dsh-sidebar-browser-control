@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { endpoint } from './cdp.js';
+import { discoverEndpoint } from './endpoint.js';
 import { discoverDesktop, stateDirectory } from './desktop.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,13 +12,7 @@ export async function ensureDesktopDebugging() {
     !['darwin', 'win32', 'linux'].includes(process.platform)
   )
     return;
-  const base = endpoint();
-  try {
-    const response = await fetch(`${base}/json/version`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    if (response.ok) return;
-  } catch {}
+  if (await discoverEndpoint()) return;
   try {
     const desktop = await discoverDesktop();
     const child = spawn(

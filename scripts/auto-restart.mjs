@@ -1,6 +1,6 @@
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { endpoint } from '../src/cdp.js';
+import { discoverEndpoint } from '../src/endpoint.js';
 import {
   RESTART_FLAG,
   inspectProcess,
@@ -9,18 +9,12 @@ import {
   launchDesktop,
   stateDirectory,
 } from '../src/desktop.js';
-const base = endpoint();
 const directory = stateDirectory();
 await mkdir(directory, { recursive: true });
 const desktop = JSON.parse(process.argv[2]);
 const inspect = () => inspectProcess(desktop.pid);
 try {
-  try {
-    const r = await fetch(`${base}/json/version`, {
-      signal: AbortSignal.timeout(1000),
-    });
-    if (r.ok) process.exit(0);
-  } catch {}
+  if (await discoverEndpoint()) process.exit(0);
   const original = await inspect();
   if (!original || original.key !== desktop.key)
     throw new Error('DSH launch changed; restart skipped.');
@@ -56,26 +50,19 @@ try {
   await waitForExit(original);
   await launchDesktop(desktop, [
     RESTART_FLAG,
-    `--remote-debugging-port=${new URL(base).port}`,
+    // Port 0 picks a free random port, published in DevToolsActivePort.
+    '--remote-debugging-port=0',
     '--remote-debugging-address=127.0.0.1',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-background-timer-throttling',
   ]);
-  let ready = false;
-  for (let i = 0; i < 60; i++) {
-    try {
-      const response = await fetch(`${base}/json/version`, {
-        signal: AbortSignal.timeout(500),
-      });
-      if (response.ok) {
-        ready = true;
-        break;
-      }
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  let base = null;
+  for (let i = 0; i < 60 && !base; i++) {
+    base = await discoverEndpoint();
+    if (!base) await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  if (!ready)
+  if (!base)
     throw new Error(
       'DSH reopened but its debugging endpoint did not become available.',
     );
