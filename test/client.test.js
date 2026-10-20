@@ -369,3 +369,25 @@ test('status warns when DSH markup or desktop protocol stop matching', async () 
     await changed.dispose();
   }
 });
+test('capture surface raises parked plugin tabs and reports hidden native tabs', async () => {
+  const { api, dispose } = setup();
+  try {
+    const parked = await api.open('B', 'https://example.org');
+    assert.deepEqual(plain(api.captureSurface('B', parked.tabId, true)), {
+      native: false,
+      visible: false,
+      raised: true,
+    });
+    const native = await api.open('B', 'https://example.org', false);
+    assert.deepEqual(plain(api.captureSurface('B', native.tabId, true)), {
+      native: true,
+      visible: false,
+    });
+    assert.throws(
+      () => api.captureSurface('B', 'missing', true),
+      /Unknown tab/,
+    );
+  } finally {
+    await dispose();
+  }
+});

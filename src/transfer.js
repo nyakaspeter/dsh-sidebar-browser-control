@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
-import { mkdir, open, realpath, stat } from 'node:fs/promises';
+import { mkdir, open, realpath, rm, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { website } from './cdp.js';
 import { stateDirectory } from './desktop.js';
 
-export const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+// Data is streamed to disk, so the cap bounds disk use and time, not memory.
+export const MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024;
 export const MAX_UPLOAD_FILES = 20;
 
 // Downloads stay in a plugin-owned folder per chat; agents move them with their
@@ -45,7 +46,13 @@ export function fileName({ disposition, url, fallback = 'download' } = {}) {
   return sanitizeName(name || fallback);
 }
 
-export async function saveDownload(directory, name, data) {
+// Opens a new, uniquely named file and appends chunks as they arrive. A failed
+// or oversized download deletes its partial file.
+export async function createDownload(
+  directory,
+  name,
+  limit = MAX_DOWNLOAD_BYTES,
+) {
   await mkdir(directory, { recursive: true });
   const ext = extname(name),
     stem = name.slice(0, name.length - ext.length);
@@ -58,14 +65,43 @@ export async function saveDownload(directory, name, data) {
       if (error.code === 'EEXIST') continue;
       throw error;
     }
-    try {
-      await handle.writeFile(data);
-    } finally {
+    let bytes = 0,
+      closed = false;
+    const close = async () => {
+      if (closed) return;
+      closed = true;
       await handle.close();
-    }
-    return path;
+    };
+    return {
+      path,
+      get bytes() {
+        return bytes;
+      },
+      async write(chunk) {
+        bytes += chunk.length;
+        if (bytes > limit) throw new Error(tooLarge(bytes));
+        await handle.write(chunk);
+      },
+      finish: close,
+      async abort() {
+        await close().catch(() => {});
+        await rm(path, { force: true });
+      },
+    };
   }
   throw new Error('Too many downloads share this file name.');
+}
+
+export async function saveDownload(directory, name, data) {
+  const file = await createDownload(directory, name, Infinity);
+  try {
+    await file.write(data);
+    await file.finish();
+  } catch (error) {
+    await file.abort();
+    throw error;
+  }
+  return file.path;
 }
 
 export function isPrivateAddress(address) {
@@ -110,22 +146,11 @@ export async function assertPublicUrl(value, resolver = lookup) {
   return url.href;
 }
 
-async function readLimited(response, limit) {
-  const declared = Number(response.headers.get('content-length'));
-  if (declared > limit) throw new Error(tooLarge(declared));
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of response.body ?? []) {
-    size += chunk.length;
-    if (size > limit) throw new Error(tooLarge(size));
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
 const tooLarge = (n) =>
   `Download exceeds the ${MAX_DOWNLOAD_BYTES / 1048576} MB limit (${n} bytes).`;
 
-// Cookies are looked up per hop so a redirect never receives another site's cookies.
+// Cookies are looked up per hop so a redirect never receives another site's
+// cookies. The body streams into the file returned by open(info).
 export async function hostFetch(
   url,
   {
@@ -136,6 +161,7 @@ export async function hostFetch(
     request = fetch,
     resolver,
     limit = MAX_DOWNLOAD_BYTES,
+    open: openFile,
   },
 ) {
   let current = url;
@@ -159,12 +185,23 @@ export async function hostFetch(
     }
     if (!response.ok)
       throw new Error(`Download failed: HTTP ${response.status}`);
-    return {
-      data: await readLimited(response, limit),
+    const declared = Number(response.headers.get('content-length'));
+    if (declared > limit) throw new Error(tooLarge(declared));
+    const info = {
       mediaType: response.headers.get('content-type') ?? undefined,
       disposition: response.headers.get('content-disposition') ?? undefined,
       url: current,
     };
+    // The file name can depend on response headers, so the sink opens late.
+    const file = await openFile(info);
+    try {
+      for await (const chunk of response.body ?? []) await file.write(chunk);
+      await file.finish();
+    } catch (error) {
+      await file.abort();
+      throw error;
+    }
+    return { ...info, path: file.path, bytes: file.bytes };
   }
   throw new Error('Too many redirects.');
 }

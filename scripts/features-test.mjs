@@ -2,7 +2,7 @@
 // screenshot modes, network idle and the cdp policy. Requires a visible chat.
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { apply } from '../src/index.js';
 import { SidebarController } from '../src/controller.js';
 
@@ -23,6 +23,11 @@ const main = await listen((req, res) => {
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', 'attachment; filename="fixture.txt"');
     res.end('downloaded content');
+    return;
+  }
+  if (req.url === '/big.bin') {
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.end(Buffer.alloc(12 * 1024 * 1024, 7));
     return;
   }
   if (req.url === '/slow') {
@@ -116,6 +121,11 @@ try {
     'CORS-blocked local download is refused host-side',
   );
 
+  const big = await run({ action: 'download', url: `${base}/big.bin` });
+  created.push(big.path);
+  assert.equal(big.bytes, 12 * 1024 * 1024, 'multi-chunk download streamed');
+  assert.equal((await stat(big.path)).size, big.bytes);
+
   const input = after.elements.find((e) => e.type === 'file');
   const upload = await run({
     action: 'upload',
@@ -131,11 +141,25 @@ try {
   const pngHeight = (data) => Buffer.from(data, 'base64').readUInt32BE(20);
   const raw = (args) => c.run({ tabId: tab.tabId, ...args }, session);
   const full = await raw({ action: 'screenshot', fullPage: true });
-  if (full.data) assert.ok(pngHeight(full.data) >= 2200, 'full page height');
-  else console.warn('full-page screenshot unavailable:', full.reason);
+  assert.ok(full.data, `full-page capture: ${full.reason}`);
+  assert.ok(pngHeight(full.data) >= 2200, 'full page height');
   const element = await raw({ action: 'screenshot', selector: '#intro' });
-  if (element.data) assert.ok(pngHeight(element.data) < 100, 'element clip');
-  else console.warn('element screenshot unavailable:', element.reason);
+  assert.ok(element.data, `element capture: ${element.reason}`);
+  assert.ok(pngHeight(element.data) < 100, 'element clip');
+
+  // A native DSH tab that is not on screen cannot be drawn or captured.
+  const native = await run({ action: 'open', url: base, background: false });
+  try {
+    assert.equal(native.native, true);
+    await run({ action: 'hide', tabId: native.tabId });
+    const hidden = await c.run(
+      { action: 'screenshot', tabId: native.tabId },
+      session,
+    );
+    assert.equal(hidden.code, 'TAB_HIDDEN', JSON.stringify(hidden));
+  } finally {
+    await run({ action: 'close', tabId: native.tabId }).catch(() => {});
+  }
 
   await assert.rejects(
     run({

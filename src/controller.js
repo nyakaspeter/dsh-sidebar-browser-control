@@ -14,12 +14,12 @@ import { combineRead, prefixRefs, readLimits } from './read.js';
 import { ScreenshotGuard } from './screenshot.js';
 import {
   MAX_DOWNLOAD_BYTES,
+  createDownload,
   downloadsDirectory,
   fileName,
   hostFetch,
   resolveUploads,
   sanitizeName,
-  saveDownload,
 } from './transfer.js';
 
 const APP_URL = 'dsh-app://app/';
@@ -601,8 +601,16 @@ export class SidebarController {
     }
     let clipped = false;
     const surface = await invoke?.('captureSurface', args.tabId, true).catch(
-      () => false,
+      () => null,
     );
+    if (surface?.native && !surface.visible)
+      return {
+        ok: false,
+        code: 'TAB_HIDDEN',
+        retryable: false,
+        message:
+          'This native DSH tab is not on screen (sidebar collapsed, another tab active, or another chat visible), so Chromium is not drawing it and it cannot be captured. Continue with read. If the user wants to see a screenshot, focus the tab first (this reveals it in the sidebar) and take the screenshot again.',
+      };
     const result = await this.screenshots
       .capture(J([session, args.tabId]), {
         signal,
@@ -631,7 +639,7 @@ export class SidebarController {
         },
       })
       .finally(() => {
-        if (surface)
+        if (surface?.raised)
           invoke('captureSurface', args.tabId, false).catch(() => {});
       });
     return result?.data
@@ -693,12 +701,23 @@ export class SidebarController {
         `Download exceeds the ${MAX_DOWNLOAD_BYTES / 1048576} MB limit.`,
       );
     if (meta.status) throw new Error(`Download failed: HTTP ${meta.status}`);
-    let file;
+    const directory = downloadsDirectory(session, this.stateDir);
+    const nameFor = (info) =>
+      args.text
+        ? sanitizeName(args.text)
+        : fileName({ disposition: info.disposition, url: info.url });
+    let result;
     if (meta.size !== undefined) {
+      const info = {
+        mediaType: meta.type,
+        disposition: meta.disposition,
+        url: meta.url,
+      };
+      const file = await createDownload(directory, nameFor(info));
       try {
-        const chunks = [];
+        // Each chunk goes straight to disk; memory stays at one chunk.
         for (let start = 0; start < meta.size; start += CHUNK)
-          chunks.push(
+          await file.write(
             Buffer.from(
               await frames.evaluate(
                 frame,
@@ -708,13 +727,10 @@ export class SidebarController {
               'base64',
             ),
           );
-        file = {
-          data: Buffer.concat(chunks),
-          mediaType: meta.type,
-          disposition: meta.disposition,
-          url: meta.url,
-          via: 'page',
-        };
+        await file.finish();
+      } catch (error) {
+        await file.abort();
+        throw error;
       } finally {
         frames
           .evaluate(
@@ -724,17 +740,19 @@ export class SidebarController {
           )
           .catch(() => {});
       }
+      result = { ...info, path: file.path, bytes: file.bytes, via: 'page' };
     } else {
       const [referer, userAgent] = await frames.evaluate(
         undefined,
         '[location.href, navigator.userAgent]',
         signal,
       );
-      file = {
+      result = {
         ...(await hostFetch(source, {
           signal,
           referer,
           userAgent,
+          open: (info) => createDownload(directory, nameFor(info)),
           cookiesFor: async (url) =>
             (
               await page.call('Network.getCookies', { urls: [url] }, signal)
@@ -745,20 +763,12 @@ export class SidebarController {
         via: 'host',
       };
     }
-    const name = args.text
-      ? sanitizeName(args.text)
-      : fileName({ disposition: file.disposition, url: file.url });
-    const path = await saveDownload(
-      downloadsDirectory(session, this.stateDir),
-      name,
-      file.data,
-    );
     return {
-      path,
-      bytes: file.data.length,
-      ...(file.mediaType && { mediaType: file.mediaType }),
-      url: file.url,
-      via: file.via,
+      path: result.path,
+      bytes: result.bytes,
+      ...(result.mediaType && { mediaType: result.mediaType }),
+      url: result.url,
+      via: result.via,
     };
   }
   dispose() {

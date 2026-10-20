@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.6.0',
+    const BUILD = '0.6.1',
       PROTOCOL = 2,
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';
@@ -573,13 +573,17 @@ window.__ModuleLoader__.load({
           return get(session, id).lease;
         },
         // Chromium produces no frames for opacity:0 layers, so captures of a
-        // parked page stall. Raise it imperceptibly for the capture only.
+        // parked page stall: raise it imperceptibly for the capture only.
+        // Hidden native tabs belong to DSH and cannot be raised.
         captureSurface(session, id, active) {
-          const page = owned.get(keyFor(session, id));
-          if (!page || page.container.style.pointerEvents !== 'none')
-            return false;
+          check(session);
+          if (nativeTab(session, id))
+            return { native: true, visible: visibleNative(session, id) };
+          const page = get(session, id);
+          if (page.container.style.pointerEvents !== 'none')
+            return { native: false, visible: true, raised: false };
           page.container.style.opacity = active ? '0.01' : '0';
-          return true;
+          return { native: false, visible: false, raised: true };
         },
         visible(session) {
           return sidebar.mounted.getSnapshot() === session;

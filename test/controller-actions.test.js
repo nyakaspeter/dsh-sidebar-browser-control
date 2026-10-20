@@ -34,7 +34,9 @@ function fakePage({ dom = {}, calls = [], handlers = {} } = {}) {
     async evaluate(frame, expression, _s, options) {
       for (const [needle, value] of Object.entries(dom))
         if (expression.includes(needle))
-          return typeof value === 'function' ? value(frame, options) : value;
+          return typeof value === 'function'
+            ? value(frame, options, expression)
+            : value;
       throw new Error(`unexpected expression ${expression.slice(0, 40)}`);
     },
   };
@@ -271,5 +273,80 @@ test('a CORS-blocked download falls back to the host and refuses local addresses
     run(c, page, { action: 'download', tabId: 't', url: 'file:///etc/passwd' }),
     /HTTP/,
   );
+  c.dispose();
+});
+test('hidden native tabs report TAB_HIDDEN without attempting a capture', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const page = fakePage();
+  const calls = [];
+  const invoke = async (method, ...params) => {
+    calls.push([method, ...params]);
+    return { native: true, visible: false };
+  };
+  const result = await c.pageAction(
+    page,
+    { evaluate: async () => 'visible' },
+    { action: 'screenshot', tabId: 'n1' },
+    'chat',
+    undefined,
+    {},
+    invoke,
+  );
+  assert.equal(result.code, 'TAB_HIDDEN');
+  assert.equal(page.calls.length, 0);
+  assert.equal(c.screenshots.blocked.size, 0, 'later captures are not blocked');
+  c.dispose();
+});
+test('parked plugin tabs are raised for the capture and restored afterwards', async () => {
+  const c = new SidebarController({ endpoint: 'http://127.0.0.1:1' });
+  const order = [];
+  const page = fakePage({
+    handlers: {
+      'Page.captureScreenshot': () => (order.push('capture'), { data: 'aGk=' }),
+    },
+  });
+  const invoke = async (method, tabId, active) => {
+    order.push(`surface:${active}`);
+    return { native: false, visible: false, raised: true };
+  };
+  const result = await c.pageAction(
+    page,
+    { evaluate: async () => 'visible' },
+    { action: 'screenshot', tabId: 'p1' },
+    'chat',
+    undefined,
+    {},
+    invoke,
+  );
+  assert.equal(result.data, 'aGk=');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(order, ['surface:true', 'capture', 'surface:false']);
+  c.dispose();
+});
+test('multi-chunk page downloads are appended to disk in order', async () => {
+  const state = await dir();
+  const c = new SidebarController({
+    endpoint: 'http://127.0.0.1:1',
+    stateDir: state,
+  });
+  const chunk = 4 * 1024 * 1024;
+  const page = fakePage({
+    dom: {
+      'async function inPageFetch': {
+        size: chunk + 3,
+        url: 'https://site.test/big.bin',
+      },
+      'async function readChunk': (_frame, _o, expression) =>
+        Buffer.from(expression.includes(`,0,`) ? 'A' : 'B').toString('base64'),
+      delete: true,
+    },
+  });
+  const result = await run(c, page, {
+    action: 'download',
+    tabId: 't',
+    url: 'https://site.test/big.bin',
+  });
+  assert.equal(await readFile(result.path, 'utf8'), 'AB');
+  assert.equal(result.bytes, 2);
   c.dispose();
 });

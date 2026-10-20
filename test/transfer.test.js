@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assertPublicUrl,
+  createDownload,
   downloadsDirectory,
   fileName,
   hostFetch,
@@ -77,7 +78,8 @@ test('private, loopback and link-local addresses are refused for host downloads'
     'https://cdn.example/x',
   );
 });
-test('host downloads look up cookies per redirect hop and enforce the size cap', async () => {
+test('host downloads stream to disk, look up cookies per hop and enforce the cap', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-host-'));
   const resolver = async () => [{ address: '93.184.216.34' }];
   const seen = [];
   const request = async (url, init) => {
@@ -97,27 +99,43 @@ test('host downloads look up cookies per redirect hop and enforce the size cap',
   const result = await hostFetch('https://a.example/file', {
     resolver,
     request,
+    open: (info) => createDownload(dir, fileName(info)),
     cookiesFor: async (url) => (url.includes('a.example') ? 'sid=a' : ''),
   });
   assert.deepEqual(seen, [
     ['https://a.example/file', 'sid=a'],
     ['https://b.example/real', undefined],
   ]);
-  assert.equal(result.data.toString(), 'payload');
+  assert.equal(result.bytes, 7);
   assert.equal(result.url, 'https://b.example/real');
+  assert.match(result.path, /x\.txt$/);
+  assert.equal(await readFile(result.path, 'utf8'), 'payload');
+  // Undeclared length: the cap is enforced while streaming and the partial
+  // file is removed.
+  let partial;
   await assert.rejects(
     hostFetch('https://a.example/big', {
       resolver,
-      limit: 3,
       cookiesFor: async () => '',
-      request: async () => new Response('too large'),
+      request: async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode('too large'));
+              c.close();
+            },
+          }),
+        ),
+      open: async () => (partial = await createDownload(dir, 'big.bin', 3)),
     }),
     /exceeds/,
   );
+  await assert.rejects(readFile(partial.path), /ENOENT/);
   await assert.rejects(
     hostFetch('https://a.example/x', {
       resolver,
       cookiesFor: async () => '',
+      open: () => assert.fail('never opened'),
       request: async () =>
         new Response(null, {
           status: 302,

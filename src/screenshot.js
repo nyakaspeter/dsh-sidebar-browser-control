@@ -27,7 +27,9 @@ export class ScreenshotGuard {
     const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
       if (!(await visible(bounded)))
-        return fail('DSH window is hidden or minimized.');
+        return fail(
+          'The DSH window is minimized, so nothing is drawn and no capture is possible. Ask the user to restore DSH if a screenshot is needed.',
+        );
       const result = await capture(bounded);
       if (!result?.data) return fail('Capture returned no image.');
       return result;

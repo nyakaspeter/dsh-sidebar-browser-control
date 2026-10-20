@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-browser-control",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Agent control of DeepSeek Harness sidebar browser through local CDP",
   "repository": {
     "type": "git",

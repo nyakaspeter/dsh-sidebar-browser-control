@@ -41,7 +41,7 @@ Agents discover the `sidebar_browser` tool automatically. It supports reading pa
 - Existing native tabs keep DSH’s toolbar. Background tabs use a matching plugin toolbar, including when revealed.
 - Cookie handling defaults to rejecting optional cookies and preserving existing choices. Disable it under **Plugins → dsh-sidebar-browser-control → Automatically handle cookie consent**. This is agent guidance, not an independent banner-clicking script.
 - By default, agent tabs share cookies and sign-ins with DSH’s own browser tabs in the same workspace, so sites you signed into work for the agent too. Turn off **Share sign-ins with DSH browser tabs** to give each chat separate, empty storage.
-- Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (up to 50 MB) are saved to that per-chat downloads folder in the plugin’s state directory; agents move them with their normal file tools.
+- Uploads only accept files inside the chat’s working directory or its browser downloads folder. Downloads (up to 500 MB, streamed to disk) are saved to a per-chat folder in the plugin’s state directory: `~/Library/Application Support/dsh-sidebar-browser-control/downloads/` on macOS, `%LOCALAPPDATA%\dsh-sidebar-browser-control\downloads\` on Windows, `~/.local/state/dsh-sidebar-browser-control/downloads/` on Linux. DSH blocks the browser’s own downloads, so the plugin fetches files through the page with its cookies. Agents move them with their normal file tools.
 - Reads are compact and paginated. Debug event collection starts only when requested.
 
 ## Tool actions
@@ -72,7 +72,7 @@ Local debugging listens on a random loopback port. The plugin finds it through C
 
 ## Limitations
 
-Screenshots can fail when DSH is minimized. Failures are bounded; agents are told to continue with page reads rather than retry. Showing screenshots requires an image-capable model and compatible attachment storage.
+Screenshots of background plugin tabs work while DSH is behind other windows. They are impossible while DSH is minimized (Chromium draws nothing; tested, including capturing the main window) and for native DSH tabs that are not on screen, which report `TAB_HIDDEN` immediately instead of timing out. Agents continue with page reads instead. Showing screenshots requires an image-capable model and compatible attachment storage.
 
 The plugin uses internal DSH APIs that may change with app updates. Browser state is temporary. Reloading the plugin discards its own pages; native tabs remain owned by DSH. Selectors don’t reach into cross-origin frames (use the `f<n>:` refs from `read` instead), and dragging between frames isn’t supported. Browser permission dialogs aren’t supported, and DSH itself cancels native downloads.
 
