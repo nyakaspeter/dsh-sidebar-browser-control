@@ -88,39 +88,3 @@ test('tool validates action and requires a live agent', async () => {
     cleanup.forEach((f) => f());
   }
 });
-
-test('status reports plugin updates only while the setting is on', async () => {
-  const { SidebarController } = await import('../src/controller.js');
-  const { UpdateChecker } = await import('../src/updates.js');
-  const run = SidebarController.prototype.run,
-    check = UpdateChecker.prototype.check;
-  SidebarController.prototype.run = async () => ({ ok: true });
-  UpdateChecker.prototype.check = async () => ({ available: false });
-  try {
-    let enabled = true,
-      tool;
-    const cleanup = [];
-    apply(
-      {
-        effect: (fn) => cleanup.push(fn()),
-        tools: { register: (t) => (tool = t) },
-      },
-      { checkForUpdates: { get: () => enabled } },
-    );
-    try {
-      const status = async () =>
-        JSON.parse(
-          await tool.execute({ action: 'status' }, { agent: { id: 'test' } }),
-        );
-      assert.deepEqual((await status()).update, { available: false });
-      enabled = false;
-      assert.equal((await status()).update, undefined);
-      assert.equal((await status()).cookieConsent, undefined);
-    } finally {
-      cleanup.forEach((f) => f());
-    }
-  } finally {
-    SidebarController.prototype.run = run;
-    UpdateChecker.prototype.check = check;
-  }
-});

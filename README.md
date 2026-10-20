@@ -18,7 +18,7 @@ Enable the plugin, then fully quit and reopen DSH. Launch DSH normally—no term
 
 On Linux, quit DSH normally when browser setup is pending; the helper reopens it automatically. On Windows, do the same if closing the window leaves DSH in the tray. The pending restart expires after five minutes and never force-quits the app.
 
-DSH has no plugin auto-update. The plugin checks GitHub releases at most once a day and, when a newer version exists, the agent mentions it once and `status` reports it. To update, add the repository URL again in **Plugins → Add plugin**, then fully quit and reopen DSH. Turn the check off under **Plugins → dsh-sidebar-browser-control → Check for plugin updates**.
+DSH has no plugin auto-update. When a newer GitHub release exists, the plugin's page in **Plugins** shows an **Update available** tag next to the version (checked at most once a day; click it to open the release). To update, add the repository URL again in **Plugins → Add plugin**, then fully quit and reopen DSH.
 
 ### DSH updates
 

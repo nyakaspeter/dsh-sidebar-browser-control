@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const icons = require('@deepseek-ai/dsh-client-ui-primitives');
     // Keep BUILD synchronized with package.json; the compatibility test checks it.
-    const BUILD = '0.7.0',
+    const BUILD = '0.8.0',
       PROTOCOL = 2,
       KIND = 'agent-browser',
       PROVIDER = 'dsh-sidebar-browser-control';
@@ -70,112 +70,92 @@ window.__ModuleLoader__.load({
       };
     }
 
-    // ---- Settings card ---------------------------------------------------
-    const SETTINGS = [
-      [
-        'checkForUpdates',
-        'Check for plugin updates',
-        'Check GitHub releases at most once a day and tell you when a new version is available.',
-      ],
-    ];
-    function installSettings(ctx) {
-      // DSH's settings transport and plugin-card slot; no application bundle patching.
-      ctx.inject?.(['configForms'], (settings) => {
-        const directory = settings.configForms.describe();
-        function Toggle({ state, saving, name, label, help, onChange }) {
-          return h(
-            'div',
-            { style: { display: 'grid', gap: '4px' } },
-            h(
-              'label',
-              { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
-              h('input', {
-                type: 'checkbox',
-                role: 'switch',
-                'aria-label': label,
-                checked: state.value?.[name] !== false,
-                disabled: saving || state.status !== 'ready' || !state.writable,
-                onChange: (e) => onChange(name, e.target.checked),
-              }),
-              label,
-            ),
-            h('p', { style: { margin: 0, opacity: 0.75 } }, help),
-          );
-        }
-        function SettingsCard(props) {
-          const [state, setState] = React.useState(() =>
-            props.scope.getSnapshot(),
-          );
-          const [saving, setSaving] = React.useState(false),
-            [error, setError] = React.useState('');
-          React.useEffect(
-            () =>
-              props.scope.subscribe(() => setState(props.scope.getSnapshot())),
-            [props.scope],
-          );
-          if (props.view === 'summary')
-            return 'Background browser control and update preferences.';
-          const onChange = async (name, value) => {
-            setSaving(true);
-            setError('');
-            try {
-              if (!(await props.scope.set(name, value)))
-                setError('Could not save. Please try again.');
-            } catch {
-              setError('Could not save. Please try again.');
-            } finally {
-              setSaving(false);
-            }
+    // ---- Update badge ----------------------------------------------------
+    // DSH has no plugin auto-update and its own "update available" tag only
+    // covers catalog installs, so this plugin's page gets its own tag beside
+    // the version. GitHub is asked at most once a day per renderer.
+    const RELEASES =
+      'https://api.github.com/repos/nyakaspeter/dsh-sidebar-browser-control/releases/latest';
+    const newer = (a, b) => {
+      const parse = (v) =>
+        String(v)
+          .replace(/^v/, '')
+          .split('-')[0]
+          .split('.')
+          .map((n) => Number(n) || 0);
+      const [x, y] = [parse(a), parse(b)];
+      for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+      return false;
+    };
+    let latestRelease;
+    const latest = () =>
+      (latestRelease ??= (async () => {
+        const key = 'dsh-sidebar-browser-control:latest-release';
+        try {
+          const cached = JSON.parse(localStorage.getItem(key) ?? 'null');
+          if (cached && Date.now() - cached.checkedAt < 864e5) return cached;
+        } catch {}
+        try {
+          const response = await fetch(RELEASES, {
+            headers: { accept: 'application/vnd.github+json' },
+          });
+          if (!response.ok) return null;
+          const release = await response.json();
+          const value = {
+            checkedAt: Date.now(),
+            version: String(release.tag_name ?? '').replace(/^v/, ''),
+            url: release.html_url,
           };
-          return h(
-            'div',
-            { style: { padding: '12px', display: 'grid', gap: '14px' } },
-            ...SETTINGS.map(([name, label, help]) =>
-              h(Toggle, {
-                key: name,
-                state,
-                saving,
-                name,
-                label,
-                help,
-                onChange,
-              }),
-            ),
-            error ? h('p', { role: 'alert' }, error) : null,
-          );
+          try {
+            localStorage.setItem(key, JSON.stringify(value));
+          } catch {}
+          return value;
+        } catch {
+          return null;
         }
-        let unregister, namespace;
-        const sync = () => {
-          const ns = directory
-            .getSnapshot()
-            .view?.namespaces.find(
-              (n) => n.value && Object.hasOwn(n.value, 'checkForUpdates'),
-            )?.ns;
-          if (ns === namespace) return;
-          unregister?.();
-          namespace = ns;
-          if (ns)
-            unregister = settings.slots.inject('plugins.bundle.config', () =>
-              settings.slots.register(
-                {
-                  name: 'plugins.bundle.config',
-                  key: PROVIDER,
-                  inject: () => ({ scope: settings.configForms.get(ns) }),
-                },
-                SettingsCard,
-              ),
-            );
+      })());
+    function UpdateBadge({ subject }) {
+      const [release, setRelease] = React.useState(null);
+      const ours = subject?.kind === 'bundle' && subject.pkg?.name === PROVIDER;
+      React.useEffect(() => {
+        if (!ours) return;
+        let live = true;
+        void latest().then((value) => live && setRelease(value));
+        return () => {
+          live = false;
         };
-        settings.effect(() => {
-          const off = directory.subscribe(sync);
-          void directory.ensure();
-          sync();
-          return () => {
-            off();
-            unregister?.();
-          };
-        });
-      });
+      }, [ours]);
+      if (!ours || !release?.version || !newer(release.version, BUILD))
+        return null;
+      const label = `Update available: v${release.version}`;
+      const open = () =>
+        window.open(release.url, '_blank', 'noopener,noreferrer');
+      const props = {
+        role: 'link',
+        tabIndex: 0,
+        title:
+          'Open the release page. Reinstall from the repository URL to update.',
+        onClick: open,
+        onKeyDown: (e) => e.key === 'Enter' && open(),
+        style: { cursor: 'pointer' },
+      };
+      return typeof icons.Tag === 'function'
+        ? h('span', props, h(icons.Tag, { tone: 'info' }, label))
+        : h(
+            'span',
+            {
+              ...props,
+              style: {
+                ...props.style,
+                padding: '1px 6px',
+                borderRadius: 'var(--dsw-radius-sm)',
+                font: 'var(--dsw-font-xxs-12)',
+                color: 'var(--dsw-alias-state-business-primary)',
+                border: '.5px solid currentColor',
+              },
+            },
+            label,
+          );
     }
 
     // ---- Page registry and agent API ---------------------------------------
@@ -834,7 +814,14 @@ window.__ModuleLoader__.load({
           });
           return;
         }
-        installSettings(ctx);
+        ctx.effect(() =>
+          ctx.slots.inject('plugins.detail.badge', () =>
+            ctx.slots.register(
+              { name: 'plugins.detail.badge', id: PROVIDER, order: 100 },
+              UpdateBadge,
+            ),
+          ),
+        );
         let layout;
         const pages = createPages({
           sidebar,

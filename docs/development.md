@@ -3,7 +3,7 @@
 ## Structure
 
 - `src/index.js`: tool registration, input schema, settings, update notices and output integration.
-- `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, settings card, page registry and agent API, layout, tab title/toolbar.
+- `src/client.js`: runs in DSH's renderer. Sections: compatibility and markup diagnostics, update badge, page registry and agent API, layout, tab title/toolbar.
 - `src/controller.js`: chat ownership, per-chat queues, window routing, target discovery caching and action dispatch (read, upload, download, screenshot, network idle).
 - `src/frames.js`: isolated worlds, cross-origin frame discovery (in-process and out-of-process via flattened auto-attach), frame offsets and frame-qualified refs.
 - `src/cdp.js`, `src/endpoint.js`: loopback transport with child sessions and event subscriptions; `DevToolsActivePort` discovery and verification.
@@ -12,7 +12,7 @@
 - `src/transfer.js`: download naming/saving, host fallback with private-address refusal, upload path confinement.
 - `src/screenshot.js`, `src/image-output.js`: bounded capture and DSH image attachments.
 - `src/autostart.js`, `src/desktop.js`, `src/restart.js`, `scripts/auto-restart.mjs`: normal-launch debugging setup; `restart.js` holds the testable restart flow.
-- `src/compatibility.js`, `src/help.js`, `src/updates.js`: build checks, sectioned agent guidance, GitHub release checks.
+- `src/compatibility.js`, `src/help.js`: build checks and sectioned agent guidance.
 
 Client code runs in DSH's module loader as a single file; there is no build step. Keep the client `BUILD` literal synchronized with `package.json`; the compatibility test checks this.
 
